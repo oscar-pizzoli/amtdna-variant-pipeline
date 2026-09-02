@@ -1,0 +1,22 @@
+#Data Files
+data/
+results/
+*.fastq.gz
+*.fq.gz
+*.bam
+*.bai
+*.sam
+*.vcf.gz
+*.tbi
+
+#Python & environments
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.env
+env/
+venv/
+
+#System
+.DS_Store
+Thumbs.db
