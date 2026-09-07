@@ -1,0 +1,3 @@
+[main] Version: 0.7.18-r1243-dirty
+[main] CMD: bwa sampe -r @RG\tID:OTZI_LIB_OTZI_PAIRED\tSM:OTZI\tLB:LIB_OTZI\tPL:ILLUMINA\tPU:OTZI_LIB_OTZI_PAIRED_RUN\tDS:Branch: paired /home/pippo/amtdna-variant-pipeline/data/reference/rCRS.fasta results/alignment/OTZI/raw_branches/tmp/OTZI_LIB_OTZI_paired_R1.sai results/alignment/OTZI/raw_branches/tmp/OTZI_LIB_OTZI_paired_R2.sai results/preprocessed/OTZI/OTZI.pair1.truncated.gz results/preprocessed/OTZI/OTZI.pair2.truncated.gz
+[main] Real time: 0.000 sec; CPU: 0.001 sec

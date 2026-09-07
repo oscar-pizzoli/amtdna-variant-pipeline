@@ -1,0 +1,259 @@
+# ==============================================================================
+# PIPELINE CONFIGURATION: ANCIENT & MODERN mtDNA CONSENSUS & AUTHENTICATION
+# ==============================================================================
+
+project:
+  name: "ancient-modern-mtdna-pipeline"
+  version: "1.0.0"
+  description: "End-to-end pipeline for ancient and modern mtDNA consensus, damage authentication and haplogrouping"
+
+resources:
+  threads: 8
+  max_memory_gb: 16
+  cpu_budget_fraction: 0.50            # Frazione di CPU host allocata al batch (default: 50%)
+  host_cores_override: null            # Opzionale: fissa i core fisici totali (es. 16 su job/cluster HPC)
+
+# ------------------------------------------------------------------------------
+# 1. INPUT & DISCOVERY (Blocco 2)
+# ------------------------------------------------------------------------------
+input:
+  data_type: "FASTQ"                  # Opzioni: "FASTQ", "BAM"
+  input_dir: "data/raw_fastq"         # Cartella contenente i file FASTQ o BAM
+  pattern_r1: "*_1*.fastq.gz"         # Pattern primario (cattura _1 e file senza mate come gli egiziani se esteso a *.fastq.gz)
+  pattern_r2: "*_2*.fastq.gz"         # Pattern mate reverse
+  single_end: false                   # false = abilita l'accoppiamento PE
+  allow_missing_mates: true           # true = permette a Egiziano 1 e 3 di girare come SE senza errori
+
+integrity:
+  mode: "strict"                      # MODIFICATO: "strict" (SHA-256 totale + sync headers invece di fast)
+
+# ------------------------------------------------------------------------------
+# 2. REFERENCE GENOME (Blocco 1 & 3)
+# ------------------------------------------------------------------------------
+reference:
+  fasta_path: "data/reference/rCRS.fasta"
+  expected_contig: "NC_012920.1"
+  strict_contig: true                 # true = rifiuta FASTA con nomi non canonici; false = accetta alias (chrM, MT)
+  expected_length: 16569              # Verifica esatta della lunghezza in bp (null per disabilitare)
+  expected_sequence_md5: null         # Es. "c68f52674c9fb33aef52dcf3f03b1185" per rCRS esatto, o null
+  is_circular: true                   # Flag passato ai moduli di alignment e consensus
+  allow_n: true                       # true = ammette 'N'; false = solo basi canoniche ACGT
+  auto_index: true                    # Genera in automatico indici BWA (.bwt, .sa, ecc.) e FAI (.fai)
+
+# ------------------------------------------------------------------------------
+# 3. PREPROCESSING & READ MERGING (Blocco 2)
+# ------------------------------------------------------------------------------
+preprocessing:
+  tool: "AdapterRemoval"              # Backend di trimming/merging
+  min_read_length: 30                 # Soglia di lunghezza minima post-trimming (bp)
+  min_merge_overlap: 11               # Overlap minimo per collassare coppie di mate (bp)
+  collapse_reads: true                # Esegue read merging per frammenti sovrapposti
+  trim_ns: true                       # Trimming conservativo delle sole basi N terminali
+
+# ------------------------------------------------------------------------------
+# 4. ALIGNMENT & STRUCTURAL PREPARATION (Blocco 3)
+# ------------------------------------------------------------------------------
+alignment:
+  aligner: "bwa-aln"
+  threads: 4
+  parallel_aln: true                  # Esegue bwa aln su R1 ed R2 in parallelo (ThreadPoolExecutor)
+  keep_temporary_sai: false           # Se true, conserva i file intermedi .sai su disco
+  keep_raw_merged_bam: true           # Conserva sample.merged.raw.bam per audit di ricerca
+  cleanup_on_failure: true            # Rimuove file intermedi/parziali in caso di errore
+
+  bwa_aln:
+    seed_length: 1000                 # Flag -l: 1000 disabilita il seed per frammenti aDNA corti
+    max_diff: 0.01                    # Flag -n: 0.01 permette tolleranza di mismatch per deaminazioni
+    max_gap_opens: 2                  # Flag -o: numero massimo di gap aperti
+    max_gap_extensions: -1            # Flag -e: gap extensions (-1 = default BWA)
+    trim_quality_threshold: 0         # Flag -q: trimming di qualità terminale (0 = disabilitato)
+
+  read_group:
+    platform: "ILLUMINA"
+    center: "LAB"
+
+# ------------------------------------------------------------------------------
+# 5. DEDUPLICATION & FILTERING (Blocco 3)
+# ------------------------------------------------------------------------------
+deduplication:
+  mode: "both"                        # Opzioni: "both" (.markdup.bam e .dedup.bam), "mark", "remove"
+  use_csi: false                      # Se true genera indici .csi anziché .bai standard
+  threads: 4
+
+filtering:
+  fast_mode: false                    # Se true salta il profiling dettagliato Python per massima velocità
+  multimapping:
+    min_mapq: 30                      # Soglia minima MAPQ
+    filter_unmapped: true             # Rimuove record non mappati (flag 0x4)
+    filter_secondary: true            # Rimuove allineamenti secondari (flag 0x100)
+    filter_supplementary: true        # Rimuove allineamenti supplementari/chimerici (flag 0x800)
+    inspect_mapper_tags: false        # Controllo opzionale tag BWA (XT:A:R, XA:Z, X1 > 0)
+
+  thresholds:
+    min_breadth_3x_fraction: 0.80     # Alert WARN se la copertura rCRS >= 3x scende sotto l'80%
+    max_duplication_rate_fraction: 0.85 # Alert WARN se il tasso di duplicazione supera l'85%
+    min_mean_depth: 3.0               # Alert WARN se la profondità media è < 3.0x
+
+# ------------------------------------------------------------------------------
+# 6. aDNA AUTHENTICATION & DAMAGE (Blocco 4)
+# ------------------------------------------------------------------------------
+damage:
+  policy_id: "adna_standard_v1"
+  input_bam_type: "FILTERED_DEDUP"
+  allow_input_bam_fallback: false
+  library_treatment: "NONE"
+
+  execution:
+    terminal_positions_to_profile: 25
+    threads: 4
+
+    rescaling:
+      enabled: true
+
+    pmd:
+      enabled: true
+      filtering_enabled: false
+      threshold: 3.0
+      require_pmd_success: false
+
+  thresholds:
+    sampling_power:
+      min_c_to_t_5p_observations: 50
+      min_g_to_a_3p_observations: 50
+      min_reads_for_damage_model: 100
+
+    terminal_deamination:
+      min_c_to_t_5p_strong: 0.10
+      min_g_to_a_3p_strong: 0.10
+      min_c_to_t_5p_moderate: 0.03
+      min_g_to_a_3p_moderate: 0.03
+      terminal_asymmetry_max_diff: 0.15
+
+    fragmentation:
+      max_median_length_bp: 80
+
+    bayesian_model:
+      delta_s_strong: 0.20
+      delta_s_moderate: 0.05
+
+    pmd_corroboration:
+      min_fraction_ge_3: 0.10
+
+    udg_diagnostics:
+      partial_max_pos2_to_pos1_ratio: 0.70
+      partial_min_pos2_damage_floor: 0.03
+
+# ------------------------------------------------------------------------------
+# 7. CONTAMINATION ESTIMATION, PRE-SCREENING & GATING (Blocco 5)
+# ------------------------------------------------------------------------------
+contamination:
+  enabled: true
+  method: "SCHMUTZI"                  # Opzioni: "SCHMUTZI", "FAST_SCREEN_TRIAGE", "DISSENT_SCREENING"
+  allow_fallback_to_dissent: false
+
+  # 1. Triage Rapido Euristico (FastContaminationScreen: zero overhead Docker, solo Python/pysam)
+  fast_screening:
+    enabled: true                     # true = abilita il pre-screening triage e il fast bypass
+    algorithm_version: "fast-screen-v2.0"
+    diagnostic_panel_path: "data/reference/diagnostic_sites_phylotree17.tsv"
+    diagnostic_panel_version: "phylotree17_v1"
+    escalate_dissenting_sites_min: 3  # Se >= 3 siti mostrano dissenso allelico -> ESCALATE
+    escalate_vaf_threshold: 0.02      # Se VAF alternativa >= 2.0% -> ESCALATE
+    min_alt_reads_per_site: 2         # Minimo 2 letture fisiche alternative a supporto
+    min_depth_for_screen: 10.0        # Depth minima diagnostica per validare lo screening
+    min_genome_depth: 10.0            # Profondità media genomica globale su mtDNA (scarta campioni low-coverage)
+    min_evaluated_sites: 50           # Numero minimo di posizioni diagnostiche con copertura valida
+    min_panel_evaluation_fraction: 0.25 # Frazione minima di siti del pannello PhyloTree coperti (25% = 88/354 siti)
+    min_base_quality: 30              # Qualità Phred minima per singola base
+    min_mapping_quality: 30           # MAPQ minima per lettura
+    min_depth_per_site: 10            # Copertura minima per includere una posizione diagnostica
+    noise_vaf_floor: 0.015            # Soglia rumore di fondo VAF (1.5%)
+    cache_screen_results: true        # Salva e riusa FastScreenResult su disco
+    cache_mode: "strict"              # "strict" (SHA-256 BAM) | "fast" (mtime + size)
+
+    panel_builder:
+      min_maf: 0.02
+      min_total_observations: 10.0
+      min_panel_size: 10
+
+  # 2. Subsampling Condizionale Deterministico
+  subsampling:
+    enabled: true
+    target_depth: 40.0
+    seed: 42
+    min_depth_threshold: 42.0
+
+  # 3. Track A: schmutzi Bayesian mixture modeling
+  schmutzi:
+    database_path: "data/reference/schmutzi_db/197"
+    threads: 2                        # 2 thread per istanza (consente 3 worker contemporanei su budget 6 CPU)
+    max_iterations: 10
+    library_treatment: "NONE"
+    use_wrapped_reference: false
+
+    # Impostazioni di esecuzione e containerizzazione
+    use_container: "auto"             # "auto" (usa script locale se disponibile, altrimenti container), true, false
+    container_engine: "docker"        # "docker" o "singularity"
+    container_image: "quay.io/biocontainers/schmutzi:1.5.6--h9a82719_1"
+
+  # 4. Track B Standalone / Dissent Policy
+  dissent:
+    min_base_quality: 30
+    min_mapping_quality: 30
+    min_depth_per_site: 10
+    noise_vaf_floor: 0.015
+    base_min_dissenting_sites: 3
+    dissent_high_confidence_min_sites: 50
+
+  # 5. Soglie di Categorizzazione e QC Gating
+  thresholds:
+    low_threshold: 0.02
+    moderate_threshold: 0.05
+    elevated_threshold: 0.10
+    min_coverage_for_estimation: 5.0
+    recommended_coverage: 10.0
+    high_confidence_max_ci_width: 0.04
+    moderate_confidence_max_ci_width: 0.08
+    min_informative_sites: 10
+    pmd_filtering_threshold: 3.0
+
+# ------------------------------------------------------------------------------
+# 8. CONSENSUS & HETEROPLASMY ENGINE (Blocco 6)
+# ------------------------------------------------------------------------------
+consensus:
+  engine: "internal"
+  min_depth: 10
+  min_qual: 30
+  mask_char: "N"
+
+heteroplasmy:
+  enabled: true
+  mode: "modern"
+  min_frequency: 0.20
+  max_frequency: 0.80
+  min_alt_reads: 3
+  min_total_depth: 15
+  uncertain_strategy: "N"
+
+# ------------------------------------------------------------------------------
+# 9. HAPLOGROUPING & VALIDATION (Blocco 7)
+# ------------------------------------------------------------------------------
+haplogroup:
+  enabled: true
+  tool: "haplogrep3"
+  tree_version: "phylotree-rcrs-17.0"
+  min_quality_score: 0.80
+
+validation:
+  enabled: true
+  expected_genome_length: 16569
+  max_n_percentage: 15.0
+  strict_mode: true                   # MODIFICATO: true (eleva ogni warning di QC a FAIL fatale)
+
+# ------------------------------------------------------------------------------
+# 10. OUTPUT DIRECTORIES & STORAGE
+# ------------------------------------------------------------------------------
+output:
+  results_dir: "results"
+  save_intermediate_bams: false
+  compress_outputs: true

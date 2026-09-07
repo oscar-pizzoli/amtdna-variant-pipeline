@@ -1,0 +1,2 @@
+/home/pippo/miniconda/envs/adna_qc/bin/pmdtools:373: SyntaxWarning: invalid escape sequence '\d'
+  MDlist=re.findall('(\d+|\D+)',MD)

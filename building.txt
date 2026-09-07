@@ -1,0 +1,32 @@
+[Blocco 1: Core Architecture & Setup]
+ ├── Gestore Configurazione (config.yaml parser)
+ ├── Logging Centralizzato (File + Console)
+ └── Validatore Dipendenze di Sistema & Reference Indexer
+
+[Blocco 2: Preprocessing & Read Merging]
+ ├── Wrapper FastQC Pre/Post
+ └── Engine Adapter Trimming & Merging (SeqPrep / AdapterRemoval)
+
+[Blocco 3: Alignment & Strict aDNA Filtering Engine]
+ ├── BWA aln/samse + Pipeline Mapping
+ ├── Samtools Sorting, Indexing & Read Deduplication
+ └── Filtro Unique Mapping & Suboptimal Hits (XT:A:U, X1=0, MAPQ >= 30)
+
+[Blocco 4: aDNA QC, Authentication & Rescaling]
+ ├── mapDamage2 Driver & Rescaling BAM
+ ├── PMDtools (Estrazione Score PMD & Deamination Plots)
+ └── Qualimap QC Automation
+
+[Blocco 5: Contamination Estimation & Circular Assembly]
+ ├── Bedtools BAM -> FastQ conversion
+ ├── MIA (Mapping Iterative Assembler) per consenso circolare
+ └── contamMix / Alignment con DB contaminanti (mt311.fa)
+
+[Blocco 6: Variant Calling, Haplotyping & Dual-Mode Consensus]
+ ├── Modalità 1: aDNA (Aploide forzato, filtro deaminazioni)
+ ├── Modalità 2: Modern mtDNA (Eteroplasmie >= 20%, codici IUPAC)
+ └── Esportazione VCF normalizzato & FASTA finale
+
+[Blocco 7: Aggregazione Metriche & Reporting Globale]
+ ├── Parser dei log e metriche per campione
+ └── Generatore Report Finale TSV/Excel (Tabella unificata QC + Haplogroup)

@@ -1,0 +1,13 @@
+name: adna_qc
+channels:
+  - defaults
+dependencies:
+  - samtools
+  - multiqc
+  - mapdamage2
+  - parallel
+  - gawk
+  - bcftools
+  - mafft
+  - bedtools
+prefix: /home/pippo/miniconda/envs/adna_qc

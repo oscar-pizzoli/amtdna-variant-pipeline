@@ -1,22 +1,79 @@
-#Data Files
-data/
-results/
+# ==============================================================================
+# BIOLOGICAL DATA & LARGE FILES (Do NOT commit to GitHub)
+# ==============================================================================
+# Raw FASTQ data
+data/raw_fastq/
+*.fastq
 *.fastq.gz
+*.fq
 *.fq.gz
+
+# Alignments and genomic index files
 *.bam
 *.bai
 *.sam
-*.vcf.gz
-*.tbi
+*.cram
+*.crai
+*.csi
+*.sai
 
-#Python & environments
+# Reference genomes and external databases
+data/reference/schmutzi_db/
+data/reference/*.fasta
+data/reference/*.fa
+data/reference/*.fai
+data/reference/*.bwt
+data/reference/*.pac
+data/reference/*.ann
+data/reference/*.amb
+data/reference/*.sa
+
+# Output, test, and benchmark directories
+results/
+benchmark_baseline/
+outcomebasecheckbasesettings/
+outcomestrictsettings/
+build/
+dist/
+scripts/
+tests/
+# Intermediate / temporary bioinformatics files
+*.tmp
+*.temp
+*.subsampled*.bam
+*.schmutzi_ready.bam
+*_final_endo.fa
+*_final_cont.fa
+
+# ==============================================================================
+# PYTHON ENVIRONMENT, LOGS & SYSTEM
+# ==============================================================================
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
-.ipynb_checkpoints/
-.env
-env/
-venv/
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
 
-#System
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Logs and runtime audits
+*.log
+*.log.*
+
+# Editor and IDE configurations
+.vscode/
+.idea/
+*.swp
+*~
 .DS_Store
-Thumbs.db
+
+# ==============================================================================
+# EXCEPTIONS (Preserve repository structure and essential metadata)
+# ==============================================================================
+!.gitkeep
+!data/reference/diagnostic_sites_phylotree17.tsv

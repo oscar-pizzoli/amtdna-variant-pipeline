@@ -1,0 +1,13 @@
+[bwa_aln] 17bp reads: max_diff = 2
+[bwa_aln] 22bp reads: max_diff = 3
+[bwa_aln] 42bp reads: max_diff = 4
+[bwa_aln] 64bp reads: max_diff = 5
+[bwa_aln] 90bp reads: max_diff = 6
+[bwa_aln] 117bp reads: max_diff = 7
+[bwa_aln] 146bp reads: max_diff = 8
+[bwa_aln] 176bp reads: max_diff = 9
+[bwa_aln] 207bp reads: max_diff = 10
+[bwa_aln] 239bp reads: max_diff = 11
+[main] Version: 0.7.18-r1243-dirty
+[main] CMD: bwa aln -t 2 -l 1000 -n 0.01 -o 2 /home/pippo/amtdna-variant-pipeline/data/reference/rCRS.fasta results/preprocessed/OTZI/OTZI.pair1.truncated.gz
+[main] Real time: 0.001 sec; CPU: 0.001 sec

@@ -1,0 +1,29 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 1. Installazione strumenti di compilazione, runtime Perl, R e Samtools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    zlib1g-dev \
+    libbz2-dev \
+    liblzma-dev \
+    perl \
+    r-base \
+    samtools \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Download e compilazione di schmutzi con tutti i sottomoduli
+WORKDIR /opt
+RUN git clone --recursive https://github.com/grenaud/schmutzi.git /opt/schmutzi && \
+    cd /opt/schmutzi && \
+    make && \
+    cd src/splitEndoVsCont && \
+    make
+
+# 3. Configurazione percorsi nel PATH e directory di lavoro
+ENV PATH="/opt/schmutzi/src:/opt/schmutzi/src/splitEndoVsCont:${PATH}"
+WORKDIR /workspace

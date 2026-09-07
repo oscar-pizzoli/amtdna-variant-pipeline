@@ -1,0 +1,574 @@
+"""Domain models, configuration policies, tracking schemas, and metric containers for Block 3 (Alignment & Filtering)."""
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
+
+
+class AlignerType(str, Enum):
+    """Supported alignment engines."""
+
+    BWA_ALN = "bwa-aln"
+    BWA_MEM = "bwa-mem"
+
+
+class DedupMode(str, Enum):
+    """PCR duplicate handling strategies."""
+
+    MARK = "mark"      # Flags duplicate records with SAM 0x400 while preserving all alignments
+    REMOVE = "remove"  # Physically removes duplicate records from the BAM file
+    BOTH = "both"      # Generates both marked (.markdup.bam) and deduplicated (.dedup.bam) BAM files
+
+
+class AlignmentStatus(str, Enum):
+    """Top-level execution and validation status."""
+
+    UNTESTED = "UNTESTED"
+    PASS = "PASS"
+    WARN = "WARN"
+    FAIL = "FAIL"
+
+
+class AlignmentWarningCode(str, Enum):
+    """Specific diagnostic warning codes."""
+
+    LOW_MAPPING_RATE = "LOW_MAPPING_RATE"
+    HIGH_DUPLICATION_RATE = "HIGH_DUPLICATION_RATE"
+    LOW_BREADTH_COVERAGE = "LOW_BREADTH_COVERAGE"
+    LOW_DEPTH_COVERAGE = "LOW_DEPTH_COVERAGE"
+    UNRESOLVED_READ_GROUPS = "UNRESOLVED_READ_GROUPS"
+    ASYMMETRIC_MATE_MAPPING = "ASYMMETRIC_MATE_MAPPING"
+
+
+class AlignmentErrorCode(str, Enum):
+    """Specific diagnostic failure codes."""
+
+    NO_MAPPED_MT_READS = "NO_MAPPED_MT_READS"
+    REFERENCE_FASTA_NOT_FOUND = "REFERENCE_FASTA_NOT_FOUND"
+    REFERENCE_CONTIG_MISMATCH = "REFERENCE_CONTIG_MISMATCH"
+    ALIGNMENT_BINARY_NOT_FOUND = "ALIGNMENT_BINARY_NOT_FOUND"
+    ALIGNMENT_EXECUTION_FAILED = "ALIGNMENT_EXECUTION_FAILED"
+    SAMTOOLS_PIPELINE_FAILED = "SAMTOOLS_PIPELINE_FAILED"
+    CORRUPTED_OUTPUT_BAM = "CORRUPTED_OUTPUT_BAM"
+    INDEXING_FAILED = "INDEXING_FAILED"
+
+
+class ReadGroupSource(str, Enum):
+    """Biological and technical classification of input reads within a Read Group."""
+
+    MERGED = "merged"
+    MERGED_TRUNCATED = "merged_truncated"
+    PAIRED = "paired"
+    SINGLETON = "singleton"
+    UNSPECIFIED = "unspecified"
+
+
+class MultiMappingStrategy(str, Enum):
+    """Strategy used to identify and filter ambiguous multi-mapping reads."""
+
+    MAPQ_CUTOFF_ONLY = "mapq_cutoff_only"
+    DISCARD_ALL_SECONDARY = "discard_all_secondary"
+    DISCARD_SECONDARY_AND_SUPPLEMENTARY = "discard_secondary_and_supplementary"
+    MAPPER_SPECIFIC_TAGS = "mapper_specific_tags"  # Optional inspection of BWA tags (XT/XA/X1) or AS/XS delta
+
+
+@dataclass
+class MultiMappingPolicy:
+    """Explicit parameters governing multi-mapping and ambiguous read resolution."""
+
+    strategy: MultiMappingStrategy = MultiMappingStrategy.DISCARD_SECONDARY_AND_SUPPLEMENTARY
+    min_mapq: int = 30
+    filter_unmapped: bool = True
+    filter_secondary: bool = True       # Filter SAM flag 0x100
+    filter_supplementary: bool = True   # Filter SAM flag 0x800
+    inspect_mapper_tags: bool = False   # Optional inspection of mapper-specific multi-mapping tags
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes multi-mapping policy."""
+        return {
+            "strategy": self.strategy.value,
+            "min_mapq": self.min_mapq,
+            "filter_unmapped": self.filter_unmapped,
+            "filter_secondary": self.filter_secondary,
+            "filter_supplementary": self.filter_supplementary,
+            "inspect_mapper_tags": self.inspect_mapper_tags,
+        }
+
+
+@dataclass
+class AlignmentFilterPolicy:
+    """Complete filtering policy combining multi-mapping rules, deduplication, and QC thresholds."""
+
+    multimapping: MultiMappingPolicy = field(default_factory=MultiMappingPolicy)
+    dedup_mode: DedupMode = DedupMode.BOTH
+    min_breadth_3x_fraction: float = 0.80        # Warning threshold if breadth >= 3x is below 80% (0.80)
+    max_duplication_rate_fraction: float = 0.85  # Warning threshold if duplication rate exceeds 85% (0.85)
+    min_mean_depth: float = 3.0                  # Warning threshold if mean depth is below 3.0x
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes complete filter policy."""
+        return {
+            "multimapping": self.multimapping.to_dict(),
+            "dedup_mode": self.dedup_mode.value,
+            "thresholds": {
+                "min_breadth_3x_fraction": self.min_breadth_3x_fraction,
+                "max_duplication_rate_fraction": self.max_duplication_rate_fraction,
+                "min_mean_depth": self.min_mean_depth,
+            },
+        }
+
+
+@dataclass
+class ReadGroupInfo:
+    """Represents a validated SAM/BAM Read Group header (@RG)."""
+
+    read_group_id: str
+    sample_id: str
+    library_id: str
+    platform: str = "ILLUMINA"
+    platform_unit: Optional[str] = None  # Flowcell / Lane / Branch
+    sequencing_center: Optional[str] = None
+    description: Optional[str] = None
+    read_group_source: ReadGroupSource = ReadGroupSource.UNSPECIFIED
+
+    VALID_PLATFORMS: Set[str] = field(
+        default_factory=lambda: {
+            "ILLUMINA", "IONTORRENT", "PACBIO", "ONT", "CAPILLARY", "HELICOS", "LS454", "SOLID",
+        },
+        init=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Defensive validation ensuring compliant SAM header specifications."""
+        if not self.read_group_id or not self.read_group_id.strip():
+            raise ValueError("ReadGroupInfo: 'read_group_id' cannot be empty.")
+        if not self.sample_id or not self.sample_id.strip():
+            raise ValueError("ReadGroupInfo: 'sample_id' cannot be empty.")
+        if not self.library_id or not self.library_id.strip():
+            raise ValueError("ReadGroupInfo: 'library_id' cannot be empty.")
+
+        # Check for illegal whitespace characters that would corrupt SAM/BAM header lines
+        for field_name, value in [
+            ("read_group_id", self.read_group_id),
+            ("sample_id", self.sample_id),
+            ("library_id", self.library_id),
+            ("platform_unit", self.platform_unit),
+            ("sequencing_center", self.sequencing_center),
+            ("description", self.description),
+        ]:
+            if value and any(c in value for c in ("\t", "\n", "\r")):
+                raise ValueError(f"ReadGroupInfo: field '{field_name}' contains illegal tab or newline characters.")
+
+        # Platform normalization and validation
+        normalized_pl = self.platform.strip().upper()
+        if normalized_pl not in self.VALID_PLATFORMS:
+            raise ValueError(
+                f"ReadGroupInfo: invalid sequencing platform '{self.platform}'. "
+                f"Expected one of: {sorted(self.VALID_PLATFORMS)}"
+            )
+        self.platform = normalized_pl
+
+    def to_bwa_rg_string(self) -> str:
+        """Formats the Read Group string for the BWA -r parameter."""
+        parts = [
+            r"@RG",
+            f"ID:{self.read_group_id}",
+            f"SM:{self.sample_id}",
+            f"LB:{self.library_id}",
+            f"PL:{self.platform}",
+        ]
+        if self.platform_unit:
+            parts.append(f"PU:{self.platform_unit}")
+        if self.sequencing_center:
+            parts.append(f"CN:{self.sequencing_center}")
+        if self.description:
+            parts.append(f"DS:{self.description}")
+        return r"\t".join(parts)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes Read Group information."""
+        return {
+            "ID": self.read_group_id,
+            "SM": self.sample_id,
+            "LB": self.library_id,
+            "PL": self.platform,
+            "PU": self.platform_unit,
+            "CN": self.sequencing_center,
+            "DS": self.description,
+            "source": self.read_group_source.value,
+        }
+
+
+@dataclass
+class ReferenceInfo:
+    """Mitochondrial reference genome metadata dynamically resolved against input FASTA."""
+
+    fasta_path: Path
+    sequence_id: Optional[str] = None         # Header ID extracted from FASTA (e.g. NC_012920.1)
+    contig_name: Optional[str] = None         # Contig name mapped in BAM (@SQ SN:)
+    description: Optional[str] = None         # Full FASTA header comment
+    length_bp: Optional[int] = None           # True base pair count parsed from FASTA
+    is_circular: bool = True                  # Biological circularity flag
+    file_sha256: Optional[str] = None         # SHA-256 of physical FASTA file on disk
+    sequence_md5: Optional[str] = None        # MD5 computed strictly on uppercase biological sequence bases
+    has_bwa_index: bool = False
+    has_fai_index: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes reference metadata."""
+        return {
+            "fasta_path": str(self.fasta_path),
+            "sequence_id": self.sequence_id,
+            "contig_name": self.contig_name,
+            "description": self.description,
+            "length_bp": self.length_bp,
+            "is_circular": self.is_circular,
+            "file_sha256": self.file_sha256,
+            "sequence_md5": self.sequence_md5,
+            "has_bwa_index": self.has_bwa_index,
+            "has_fai_index": self.has_fai_index,
+        }
+
+
+@dataclass
+class MAPQProfile:
+    """Stratified Mapping Quality (MAPQ) distribution."""
+
+    count_mapq_0: int = 0         # Very low confidence / Ambiguous hits
+    count_mapq_1_9: int = 0       # Low confidence
+    count_mapq_10_19: int = 0     # Moderate-low confidence
+    count_mapq_20_29: int = 0     # Moderate-high confidence
+    count_mapq_30_plus: int = 0   # High confidence (aDNA core threshold)
+    mean_mapq: float = 0.0
+
+    @property
+    def total_mapped_evaluated(self) -> int:
+        return (
+            self.count_mapq_0
+            + self.count_mapq_1_9
+            + self.count_mapq_10_19
+            + self.count_mapq_20_29
+            + self.count_mapq_30_plus
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes MAPQ distribution."""
+        return {
+            "mapq_0": self.count_mapq_0,
+            "mapq_1_9": self.count_mapq_1_9,
+            "mapq_10_19": self.count_mapq_10_19,
+            "mapq_20_29": self.count_mapq_20_29,
+            "mapq_30_plus": self.count_mapq_30_plus,
+            "total_evaluated": self.total_mapped_evaluated,
+            "mean_mapq": round(self.mean_mapq, 2),
+        }
+
+
+@dataclass
+class CoverageMetrics:
+    """Mitochondrial depth, coverage distribution, and breadth percentages [0.0 - 100.0%]."""
+
+    mean_depth_pre_dedup: Optional[float] = None  # None if baseline BAM was not evaluated
+    mean_depth_post_dedup: float = 0.0
+    median_depth_post_dedup: float = 0.0
+    max_depth_post_dedup: int = 0
+    p95_depth_post_dedup: float = 0.0
+    p99_depth_post_dedup: float = 0.0
+    covered_bases_1x: int = 0
+    breadth_1x_pct: float = 0.0    # % of rCRS bases covered >= 1x (0.0 - 100.0%)
+    breadth_3x_pct: float = 0.0    # % of rCRS bases covered >= 3x (0.0 - 100.0%)
+    breadth_5x_pct: float = 0.0    # % of rCRS bases covered >= 5x
+    breadth_10x_pct: float = 0.0   # % of rCRS bases covered >= 10x
+    breadth_30x_pct: float = 0.0   # % of rCRS bases covered >= 30x
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes coverage metrics."""
+        return {
+            "mean_depth_pre_dedup": round(self.mean_depth_pre_dedup, 2) if self.mean_depth_pre_dedup is not None else None,
+            "mean_depth_post_dedup": round(self.mean_depth_post_dedup, 2),
+            "median_depth_post_dedup": round(self.median_depth_post_dedup, 2),
+            "max_depth_post_dedup": self.max_depth_post_dedup,
+            "p95_depth_post_dedup": round(self.p95_depth_post_dedup, 2),
+            "p99_depth_post_dedup": round(self.p99_depth_post_dedup, 2),
+            "covered_bases_1x": self.covered_bases_1x,
+            "breadth_1x_pct": round(self.breadth_1x_pct, 2),
+            "breadth_3x_pct": round(self.breadth_3x_pct, 2),
+            "breadth_5x_pct": round(self.breadth_5x_pct, 2),
+            "breadth_10x_pct": round(self.breadth_10x_pct, 2),
+            "breadth_30x_pct": round(self.breadth_30x_pct, 2),
+        }
+
+
+@dataclass
+class DedupMetrics:
+    """PCR duplicate metrics with explicit read, pair, and single-fragment separation."""
+
+    examined_reads: int = 0
+    examined_pairs: int = 0
+    examined_single_fragments: int = 0    # Merged + Singletons
+    duplicate_reads: int = 0
+    duplicate_pairs: int = 0
+    duplicate_single_fragments: int = 0
+    retained_reads: int = 0
+    retained_pairs: int = 0
+    retained_single_fragments: int = 0
+    duplication_rate_reads: float = 0.0   # Duplication fraction based on total reads (0.0 - 1.0)
+    duplication_rate_pairs: float = 0.0   # Duplication fraction based on pairs (0.0 - 1.0)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes deduplication metrics."""
+        return {
+            "examined_reads": self.examined_reads,
+            "examined_pairs": self.examined_pairs,
+            "examined_single_fragments": self.examined_single_fragments,
+            "duplicate_reads": self.duplicate_reads,
+            "duplicate_pairs": self.duplicate_pairs,
+            "duplicate_single_fragments": self.duplicate_single_fragments,
+            "retained_reads": self.retained_reads,
+            "retained_pairs": self.retained_pairs,
+            "retained_single_fragments": self.retained_single_fragments,
+            "duplication_rate_reads": round(self.duplication_rate_reads, 4),
+            "duplication_rate_pairs": round(self.duplication_rate_pairs, 4),
+        }
+
+
+@dataclass
+class ProvenanceMetrics:
+    """Tracks origin and class distribution of input units and their mapped counterparts."""
+
+    input_merged_fragments: int = 0
+    input_merged_truncated_fragments: int = 0
+    input_paired_pairs: int = 0
+    input_singleton_reads: int = 0
+
+    mapped_merged_fragments: Optional[int] = None
+    mapped_merged_truncated_fragments: Optional[int] = None
+    mapped_paired_pairs: Optional[int] = None
+    mapped_singleton_reads: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes read provenance metrics."""
+        return {
+            "inputs": {
+                "merged_fragments": self.input_merged_fragments,
+                "merged_truncated_fragments": self.input_merged_truncated_fragments,
+                "paired_pairs": self.input_paired_pairs,
+                "singleton_reads": self.input_singleton_reads,
+            },
+            "mapped": {
+                "merged_fragments": self.mapped_merged_fragments,
+                "merged_truncated_fragments": self.mapped_merged_truncated_fragments,
+                "paired_pairs": self.mapped_paired_pairs,
+                "singleton_reads": self.mapped_singleton_reads,
+            },
+        }
+
+
+@dataclass
+class AlignmentOutputs:
+    """Container mapping physical BAM, BAI, and metric output files."""
+
+    # Intermediate BAM files
+    merged_raw_bam: Optional[Path] = None     # Merged raw branch BAM prior to filtering
+    merged_raw_bai: Optional[Path] = None
+    sorted_bam: Optional[Path] = None         # Prepared BAM (collate -> fixmate -m -> coordinate sort)
+    sorted_bai: Optional[Path] = None
+
+    # Post-filter BAM files
+    filtered_bam: Optional[Path] = None       # Post quality filters (MAPQ >= 30, no unmapped, no secondary/supp)
+    filtered_bai: Optional[Path] = None
+
+    # Post-deduplication BAM files
+    markdup_bam: Optional[Path] = None        # BAM with duplicate flag 0x400 preserved
+    markdup_bai: Optional[Path] = None
+    dedup_bam: Optional[Path] = None          # BAM with duplicates physically removed
+    dedup_bai: Optional[Path] = None
+
+    # Report and diagnostic files
+    markdup_metrics_txt: Optional[Path] = None
+    flagstat_pre_filter_txt: Optional[Path] = None
+    flagstat_post_filter_txt: Optional[Path] = None
+    flagstat_post_dedup_txt: Optional[Path] = None
+    samtools_stats_txt: Optional[Path] = None
+    depth_tsv: Optional[Path] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes physical file paths."""
+        return {
+            "bams": {
+                "merged_raw": str(self.merged_raw_bam) if self.merged_raw_bam else None,
+                "sorted": str(self.sorted_bam) if self.sorted_bam else None,
+                "filtered": str(self.filtered_bam) if self.filtered_bam else None,
+                "markdup": str(self.markdup_bam) if self.markdup_bam else None,
+                "dedup": str(self.dedup_bam) if self.dedup_bam else None,
+            },
+            "indices": {
+                "merged_raw_bai": str(self.merged_raw_bai) if self.merged_raw_bai else None,
+                "sorted_bai": str(self.sorted_bai) if self.sorted_bai else None,
+                "filtered_bai": str(self.filtered_bai) if self.filtered_bai else None,
+                "markdup_bai": str(self.markdup_bai) if self.markdup_bai else None,
+                "dedup_bai": str(self.dedup_bai) if self.dedup_bai else None,
+            },
+            "reports": {
+                "markdup_metrics": str(self.markdup_metrics_txt) if self.markdup_metrics_txt else None,
+                "flagstat_pre_filter": str(self.flagstat_pre_filter_txt) if self.flagstat_pre_filter_txt else None,
+                "flagstat_post_filter": str(self.flagstat_post_filter_txt) if self.flagstat_post_filter_txt else None,
+                "flagstat_post_dedup": str(self.flagstat_post_dedup_txt) if self.flagstat_post_dedup_txt else None,
+                "samtools_stats": str(self.samtools_stats_txt) if self.samtools_stats_txt else None,
+                "depth_tsv": str(self.depth_tsv) if self.depth_tsv else None,
+            },
+        }
+
+
+@dataclass
+class AlignmentMetrics:
+    """Comprehensive metric summary cleanly separating raw, filtered, and deduplicated counts."""
+
+    # 1. Raw Metrics (Pre-filter)
+    total_input_reads: int = 0
+    mapped_reads_raw: Optional[int] = None
+    unmapped_reads_raw: Optional[int] = None
+    secondary_reads_raw: Optional[int] = None
+    supplementary_reads_raw: Optional[int] = None
+    premarked_duplicates_raw: Optional[int] = None
+    raw_mapping_rate_pct: Optional[float] = None  # Mapping rate percentage [0.0 - 100.0%]
+
+    # 2. Filtering Metrics (Post-filter)
+    filtered_unmapped_reads: int = 0
+    filtered_secondary_reads: int = 0
+    filtered_supplementary_reads: int = 0
+    filtered_low_mapq_reads: int = 0
+    retained_filtered_reads: int = 0
+
+    # 3. Structured Profiles
+    provenance: ProvenanceMetrics = field(default_factory=ProvenanceMetrics)
+    mapq_profile: MAPQProfile = field(default_factory=MAPQProfile)
+    dedup_metrics: DedupMetrics = field(default_factory=DedupMetrics)
+    coverage: CoverageMetrics = field(default_factory=CoverageMetrics)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes all alignment metrics."""
+        return {
+            "raw_metrics": {
+                "total_input_reads": self.total_input_reads,
+                "mapped_reads_raw": self.mapped_reads_raw,
+                "unmapped_reads_raw": self.unmapped_reads_raw,
+                "secondary_reads_raw": self.secondary_reads_raw,
+                "supplementary_reads_raw": self.supplementary_reads_raw,
+                "premarked_duplicates_raw": self.premarked_duplicates_raw,
+                "raw_mapping_rate_pct": round(self.raw_mapping_rate_pct, 2) if self.raw_mapping_rate_pct is not None else None,
+            },
+            "filtering_metrics": {
+                "filtered_unmapped": self.filtered_unmapped_reads,
+                "filtered_secondary": self.filtered_secondary_reads,
+                "filtered_supplementary": self.filtered_supplementary_reads,
+                "filtered_low_mapq": self.filtered_low_mapq_reads,
+                "retained_filtered_reads": self.retained_filtered_reads,
+            },
+            "provenance": self.provenance.to_dict(),
+            "mapq_profile": self.mapq_profile.to_dict(),
+            "deduplication": self.dedup_metrics.to_dict(),
+            "coverage": self.coverage.to_dict(),
+        }
+
+
+@dataclass
+class AlignmentToolMetadata:
+    """Audit trail recording environment, versions, hashes, and executed commands."""
+
+    aligner_name: AlignerType = AlignerType.BWA_ALN
+    bwa_version: Optional[str] = None
+    samtools_version: Optional[str] = None
+    reference_file_sha256: Optional[str] = None
+    working_directory: Optional[str] = None
+    run_started: Optional[str] = None
+    run_finished: Optional[str] = None
+    runtime_seconds: Optional[float] = None
+    commands_executed: List[str] = field(default_factory=list)
+    parameters: Dict[str, Any] = field(default_factory=dict)
+
+    def mark_started(self) -> None:
+        """Records UTC start timestamp."""
+        self.run_started = datetime.now(timezone.utc).isoformat()
+
+    def mark_finished(self) -> None:
+        """Records UTC finish timestamp and calculates runtime."""
+        self.run_finished = datetime.now(timezone.utc).isoformat()
+        if self.run_started:
+            start_dt = datetime.fromisoformat(self.run_started)
+            end_dt = datetime.fromisoformat(self.run_finished)
+            self.runtime_seconds = round((end_dt - start_dt).total_seconds(), 2)
+
+    def add_command(self, cmd: str) -> None:
+        """Appends an executed shell command."""
+        self.commands_executed.append(cmd)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes audit metadata."""
+        return {
+            "aligner_name": self.aligner_name.value,
+            "bwa_version": self.bwa_version or "unknown",
+            "samtools_version": self.samtools_version or "unknown",
+            "reference_file_sha256": self.reference_file_sha256,
+            "working_directory": self.working_directory,
+            "timestamps": {
+                "started": self.run_started,
+                "finished": self.run_finished,
+                "runtime_seconds": self.runtime_seconds,
+            },
+            "commands_executed": self.commands_executed,
+            "parameters": self.parameters,
+        }
+
+
+@dataclass
+class AlignmentResult:
+    """Top-level record summarizing the complete outcome of Block 3 for a sample."""
+
+    sample_id: str
+    status: AlignmentStatus = AlignmentStatus.UNTESTED
+    warning_codes: List[AlignmentWarningCode] = field(default_factory=list)
+    error_codes: List[AlignmentErrorCode] = field(default_factory=list)
+    policy: AlignmentFilterPolicy = field(default_factory=AlignmentFilterPolicy)
+    reference: ReferenceInfo = field(default_factory=lambda: ReferenceInfo(fasta_path=Path("")))
+    read_groups: List[ReadGroupInfo] = field(default_factory=list)
+    outputs: AlignmentOutputs = field(default_factory=AlignmentOutputs)
+    metrics: AlignmentMetrics = field(default_factory=AlignmentMetrics)
+    tool_meta: AlignmentToolMetadata = field(default_factory=AlignmentToolMetadata)
+    warnings: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+    def add_warning(self, msg: str, code: Optional[AlignmentWarningCode] = None) -> None:
+        """Records a human-readable warning and optional structured warning code."""
+        self.warnings.append(msg)
+        if code and code not in self.warning_codes:
+            self.warning_codes.append(code)
+        if self.status != AlignmentStatus.FAIL:
+            self.status = AlignmentStatus.WARN
+
+    def add_error(self, msg: str, code: AlignmentErrorCode) -> None:
+        """Records an error message, sets status strictly to FAIL, and logs error code."""
+        self.errors.append(msg)
+        if code not in self.error_codes:
+            self.error_codes.append(code)
+        self.status = AlignmentStatus.FAIL
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes the complete alignment result."""
+        return {
+            "sample_id": self.sample_id,
+            "status": self.status.value,
+            "warning_codes": [w.value for w in self.warning_codes],
+            "error_codes": [e.value for e in self.error_codes],
+            "policy": self.policy.to_dict(),
+            "reference": self.reference.to_dict(),
+            "read_groups": [rg.to_dict() for rg in self.read_groups],
+            "outputs": self.outputs.to_dict(),
+            "metrics": self.metrics.to_dict(),
+            "tool_metadata": self.tool_meta.to_dict(),
+            "warnings": self.warnings,
+            "errors": self.errors,
+        }

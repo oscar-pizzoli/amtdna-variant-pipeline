@@ -1,0 +1,2 @@
+Started with the command: /home/pippo/miniconda/envs/adna_qc/bin/mapDamage -i results/alignment/OTZI/OTZI.dedup.bam -r /home/pippo/amtdna-variant-pipeline/data/reference/rCRS.fasta -d results/damage/OTZI --rescale-only
+Rescaling BAM: 'results/alignment/OTZI/OTZI.dedup.bam' -> 'results/damage/OTZI/OTZI.dedup.rescaled.bam'
