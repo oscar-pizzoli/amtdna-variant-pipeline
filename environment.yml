@@ -1,13 +1,30 @@
 name: adna_qc
 channels:
-  - defaults
+- conda-forge
+- bioconda
+- defaults
 dependencies:
-  - samtools
-  - multiqc
-  - mapdamage2
-  - parallel
-  - gawk
-  - bcftools
-  - mafft
-  - bedtools
-prefix: /home/pippo/miniconda/envs/adna_qc
+- typeguard
+- pyyaml
+- python=3.12
+- samtools
+- multiqc
+- mapdamage2
+- parallel
+- gawk
+- bcftools
+- mafft
+- bedtools
+- bwa
+- adapterremoval=2.3.3
+- pysam
+- pytest
+- sra-tools
+- pmdtools
+- make
+- gxx_linux-64
+- gcc_linux-64
+- perl
+- r-base
+- cmake
+- scipy

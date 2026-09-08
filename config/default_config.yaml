@@ -151,7 +151,6 @@ contamination:
   method: "SCHMUTZI"                  # Opzioni: "SCHMUTZI", "FAST_SCREEN_TRIAGE", "DISSENT_SCREENING"
   allow_fallback_to_dissent: false
 
-  # 1. Triage Rapido Euristico (FastContaminationScreen)
   fast_screening:
     enabled: true                     # true = abilita il pre-screening triage e il fast bypass
     algorithm_version: "fast-screen-v2.0"
@@ -176,14 +175,12 @@ contamination:
       min_total_observations: 10.0
       min_panel_size: 10
 
-  # 2. Subsampling Condizionale Deterministico
   subsampling:
     enabled: true
     target_depth: 40.0
     seed: 42
     min_depth_threshold: 42.0
 
-  # 3. Track A: schmutzi Bayesian mixture modeling
   schmutzi:
     database_path: "data/reference/schmutzi_db/197"
     threads: 2
@@ -195,7 +192,6 @@ contamination:
     container_engine: "docker"
     container_image: "quay.io/biocontainers/schmutzi:1.5.6--h9a82719_1"
 
-  # 4. Track B Standalone / Dissent Policy
   dissent:
     min_base_quality: 30
     min_mapping_quality: 30
@@ -204,7 +200,6 @@ contamination:
     base_min_dissenting_sites: 3
     dissent_high_confidence_min_sites: 50
 
-  # 5. Soglie di Categorizzazione e QC Gating
   thresholds:
     low_threshold: 0.02
     moderate_threshold: 0.05
@@ -223,18 +218,15 @@ consensus:
   policy_id: "consensus_strict_v1"
   policy_version: "1.0.0"
 
-  # Filtri osservazionali per-base e per-read (PileupEngine)
   min_base_quality: 30
   min_mapping_quality: 30
 
-  # Parametri Majority Consensus Builder
   min_consensus_depth: 10
   major_allele_fraction: 0.80
   ambiguity_min_vaf: 0.10
   emit_iupac_fasta: true
   mask_char: "N"
 
-  # Chiamata Eteroplasmie: Profilo Standard
   heteroplasmy:
     enabled: true
     min_depth: 15
@@ -244,14 +236,12 @@ consensus:
     strand_bias_alpha: 0.05
     strand_bias_min_strand_reads: 1
 
-  # Chiamata Eteroplasmie: Profilo Ristretto (Gating degradato / Contaminazione)
   restricted_heteroplasmy:
     min_depth: 20
     min_alt_reads: 5
     min_vaf: 0.25
     max_vaf: 0.75
 
-  # Regioni diagnostiche ipervariabili per audit QC (HVS-I & HVS-II)
   regions:
     hvs1_start: 16024
     hvs1_end: 16383
@@ -259,19 +249,31 @@ consensus:
     hvs2_end: 340
 
 # ------------------------------------------------------------------------------
-# 9. HAPLOGROUPING & VALIDATION (Blocco 7)
+# 9. HAPLOGROUPING & PHYLOGENETIC VALIDATION (Blocco 7)
 # ------------------------------------------------------------------------------
 haplogroup:
-  enabled: true
   tool: "haplogrep3"
-  tree_version: "phylotree-rcrs-17.0"
-  min_quality_score: 0.80
+  # Alberi supportati: phylotree-rcrs@17.0, phylotree-fu-rcrs@1.2
+  tree_id: "phylotree-fu-rcrs"
+  tree_version: "1.2"
+  metric: "kulczynski"
+  min_quality_score: 0.80             # Soglia per ASSIGNED_CONFIDENT
+  cross_check_vcf: true               # Esegue Run B comparativo su VCF
+  timeout_seconds: 300                # Timeout subprocess per classificazione CLI (s)
+  retain_raw_output: true             # Salva sample.haplogrep.<type>.raw.json per audit
 
 validation:
-  enabled: true
-  expected_genome_length: 16569
-  max_n_percentage: 15.0
-  strict_mode: false
+  sequence_type: "CANONICAL"          # "CANONICAL" (ACGTN) | "IUPAC" (inclusi caratteri degenerati)
+  max_n_percentage: 15.0              # Frazione massima di 'N' ammesse nel consensus (0-100)
+
+cross_block_audit:
+  min_quality_score: 0.80             # Quality score floor per LOW_HAPLOGROUP_CONFIDENCE
+  max_missing_diagnostic_mutations: 2 # Allerta se mancano mutazioni chiave del nodo
+  max_private_mutations: 5            # Allerta per sospetto ipermutato o artefatti
+  contam_affinity_threshold: 0.015    # Soglia contaminazione (1.5%) per warning affinità contaminante
+  subclade_contam_max_fraction: 0.03  # Tetto contaminazione (3.0%) per rigetto shift di sub-clade
+  evaluate_contaminant_closeness: true # Abilita cross-check con aplotipo contaminante (Blocco 5)
+  flag_damage_in_private_mutations: true # Abilita triage chimico transizioni su aDNA (Blocco 4)
 
 # ------------------------------------------------------------------------------
 # 10. OUTPUT DIRECTORIES & STORAGE

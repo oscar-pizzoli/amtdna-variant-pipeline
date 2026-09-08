@@ -1,0 +1,85 @@
+"""
+Block 7 Enumerations: Status vocabularies, nomenclature affinity levels,
+chemical damage classifications, and diagnostic audit codes.
+"""
+
+from enum import Enum
+
+
+class SequenceType(str, Enum):
+    """Allowed nucleotide alphabet constraints."""
+    CANONICAL = "CANONICAL"
+    IUPAC = "IUPAC"
+
+
+class HaplogroupStatus(str, Enum):
+    """Operational classification of the phylogenetic haplogroup assignment."""
+    ASSIGNED_CONFIDENT = "ASSIGNED_CONFIDENT"
+    ASSIGNED_WITH_WARNINGS = "ASSIGNED_WITH_WARNINGS"
+    AMBIGUOUS = "AMBIGUOUS"
+    UNRESOLVED = "UNRESOLVED"
+    REJECTED = "REJECTED"
+
+
+class ContaminantAffinity(str, Enum):
+    """
+    Topological relationship between endogenous and estimated contaminant haplogroups.
+    """
+    EXACT_MATCH = "EXACT_MATCH"
+    SUBCLADE = "SUBCLADE"
+    ANCESTRAL = "ANCESTRAL"
+    DISTANT = "DISTANT"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class AuditSeverity(str, Enum):
+    """Severity tier for cross-block consistency and sequence audit flags."""
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
+
+
+class OverallValidationStatus(str, Enum):
+    """Final biological and technical validation status of the evaluated sample."""
+    PASS = "PASS"
+    WARN = "WARN"
+    FAIL = "FAIL"
+
+
+class PrivateMutationDamageClass(str, Enum):
+    """
+    Mutually exclusive chemical classification of private mutations.
+    Differentiates verified transversions, spatial transitions, and potential alignment artifacts.
+    """
+    TRANSVERSION_NON_DAMAGE = "TRANSVERSION_NON_DAMAGE"
+    TRANSITION_NON_DAMAGE = "TRANSITION_NON_DAMAGE"
+    TRANSITION_REQUIRES_SPATIAL_AUDIT = "TRANSITION_REQUIRES_SPATIAL_AUDIT"
+    TRANSITION_UNSUPPORTED_DAMAGE = "TRANSITION_UNSUPPORTED_DAMAGE"
+    INDEL_SOFT_CLIP_SUSPECT = "INDEL_SOFT_CLIP_SUSPECT"
+    UNASSESSED = "UNASSESSED"
+
+
+class AuditCode(str, Enum):
+    """Audit flag identifiers for deterministic parsing and downstream reporting."""
+    MISSING_FASTA_HEADER = "MISSING_FASTA_HEADER"
+    MULTI_RECORD_FASTA = "MULTI_RECORD_FASTA"
+    SAMPLE_ID_MISMATCH = "SAMPLE_ID_MISMATCH"
+    PROVENANCE_HASH_MISMATCH = "PROVENANCE_HASH_MISMATCH"
+    REFERENCE_INCOMPATIBLE = "REFERENCE_INCOMPATIBLE"
+    SEQUENCE_LENGTH_MISMATCH = "SEQUENCE_LENGTH_MISMATCH"
+    EXCESS_MISSING_DATA = "EXCESS_MISSING_DATA"
+    NON_CANONICAL_CHARACTERS = "NON_CANONICAL_CHARACTERS"
+    LOW_HAPLOGROUP_CONFIDENCE = "LOW_HAPLOGROUP_CONFIDENCE"
+    HAPLOGROUP_INPUT_DISCORDANCE = "HAPLOGROUP_INPUT_DISCORDANCE"
+    MULTIPLE_TOP_HITS_AMBIGUOUS = "MULTIPLE_TOP_HITS_AMBIGUOUS"
+    MISSING_DIAGNOSTIC_MUTATIONS = "MISSING_DIAGNOSTIC_MUTATIONS"
+    EXCESS_PRIVATE_MUTATIONS = "EXCESS_PRIVATE_MUTATIONS"
+    CONTAMINANT_AFFINITY_WARNING = "CONTAMINANT_AFFINITY_WARNING"
+    DAMAGE_SUSPECT_PRIVATE_MUTATION = "DAMAGE_SUSPECT_PRIVATE_MUTATION"
+    SUBCLADE_HETEROPLASMY_REFINEMENT = "SUBCLADE_HETEROPLASMY_REFINEMENT"
+    SUBCLADE_FASTA_SPECIFIC = "SUBCLADE_FASTA_SPECIFIC"
+    HETEROPLASMY_SUBCLADE_SUPPORTED = "HETEROPLASMY_SUBCLADE_SUPPORTED"
+    SUSPECT_HETEROPLASMY_SUBCLADE_REJECTED = "SUSPECT_HETEROPLASMY_SUBCLADE_REJECTED"
+    UPSTREAM_CONTRACT_ANOMALY = "UPSTREAM_CONTRACT_ANOMALY"
+    MISSING_UPSTREAM_CONTRACT = "MISSING_UPSTREAM_CONTRACT"
+    MISSING_CONTAMINATION_METRIC = "MISSING_CONTAMINATION_METRIC"
