@@ -19,13 +19,13 @@ resources:
 input:
   data_type: "FASTQ"                  # Opzioni: "FASTQ", "BAM"
   input_dir: "data/raw_fastq"         # Cartella contenente i file FASTQ o BAM
-  pattern_r1: "*_1*.fastq.gz"         # Pattern primario (cattura _1 e file senza mate come gli egiziani se esteso a *.fastq.gz)
-  pattern_r2: "*_2*.fastq.gz"         # Pattern mate reverse
-  single_end: false                   # false = abilita l'accoppiamento PE
-  allow_missing_mates: true           # true = permette a Egiziano 1 e 3 di girare come SE senza errori
+  pattern_r1: "*.fastq.gz"            # Pattern di matching per il forward read
+  pattern_r2: ""                      # Pattern di matching per il reverse read
+  single_end: true                    # Se true, forza la pipeline in modalità Single-End
+  allow_missing_mates: false          # Se true, tollera R1 orfani declassandoli a SE invece di fallire
 
 integrity:
-  mode: "strict"                      # MODIFICATO: "strict" (SHA-256 totale + sync headers invece di fast)
+  mode: "fast"                        # Opzioni: "fast" (controllo I/O rapido), "strict" (SHA-256 totale + sync headers)
 
 # ------------------------------------------------------------------------------
 # 2. REFERENCE GENOME (Blocco 1 & 3)
@@ -151,7 +151,7 @@ contamination:
   method: "SCHMUTZI"                  # Opzioni: "SCHMUTZI", "FAST_SCREEN_TRIAGE", "DISSENT_SCREENING"
   allow_fallback_to_dissent: false
 
-  # 1. Triage Rapido Euristico (FastContaminationScreen: zero overhead Docker, solo Python/pysam)
+  # 1. Triage Rapido Euristico (FastContaminationScreen)
   fast_screening:
     enabled: true                     # true = abilita il pre-screening triage e il fast bypass
     algorithm_version: "fast-screen-v2.0"
@@ -161,9 +161,9 @@ contamination:
     escalate_vaf_threshold: 0.02      # Se VAF alternativa >= 2.0% -> ESCALATE
     min_alt_reads_per_site: 2         # Minimo 2 letture fisiche alternative a supporto
     min_depth_for_screen: 10.0        # Depth minima diagnostica per validare lo screening
-    min_genome_depth: 10.0            # Profondità media genomica globale su mtDNA (scarta campioni low-coverage)
+    min_genome_depth: 10.0            # Profondità media genomica globale su mtDNA
     min_evaluated_sites: 50           # Numero minimo di posizioni diagnostiche con copertura valida
-    min_panel_evaluation_fraction: 0.25 # Frazione minima di siti del pannello PhyloTree coperti (25% = 88/354 siti)
+    min_panel_evaluation_fraction: 0.25 # Frazione minima di siti del pannello coperti (25%)
     min_base_quality: 30              # Qualità Phred minima per singola base
     min_mapping_quality: 30           # MAPQ minima per lettura
     min_depth_per_site: 10            # Copertura minima per includere una posizione diagnostica
@@ -186,14 +186,13 @@ contamination:
   # 3. Track A: schmutzi Bayesian mixture modeling
   schmutzi:
     database_path: "data/reference/schmutzi_db/197"
-    threads: 2                        # 2 thread per istanza (consente 3 worker contemporanei su budget 6 CPU)
+    threads: 2
     max_iterations: 10
     library_treatment: "NONE"
     use_wrapped_reference: false
 
-    # Impostazioni di esecuzione e containerizzazione
-    use_container: "auto"             # "auto" (usa script locale se disponibile, altrimenti container), true, false
-    container_engine: "docker"        # "docker" o "singularity"
+    use_container: "auto"
+    container_engine: "docker"
     container_image: "quay.io/biocontainers/schmutzi:1.5.6--h9a82719_1"
 
   # 4. Track B Standalone / Dissent Policy
@@ -221,19 +220,43 @@ contamination:
 # 8. CONSENSUS & HETEROPLASMY ENGINE (Blocco 6)
 # ------------------------------------------------------------------------------
 consensus:
-  engine: "internal"
-  min_depth: 10
-  min_qual: 30
+  policy_id: "consensus_strict_v1"
+  policy_version: "1.0.0"
+
+  # Filtri osservazionali per-base e per-read (PileupEngine)
+  min_base_quality: 30
+  min_mapping_quality: 30
+
+  # Parametri Majority Consensus Builder
+  min_consensus_depth: 10
+  major_allele_fraction: 0.80
+  ambiguity_min_vaf: 0.10
+  emit_iupac_fasta: true
   mask_char: "N"
 
-heteroplasmy:
-  enabled: true
-  mode: "modern"
-  min_frequency: 0.20
-  max_frequency: 0.80
-  min_alt_reads: 3
-  min_total_depth: 15
-  uncertain_strategy: "N"
+  # Chiamata Eteroplasmie: Profilo Standard
+  heteroplasmy:
+    enabled: true
+    min_depth: 15
+    min_alt_reads: 3
+    min_vaf: 0.10
+    max_vaf: 0.80
+    strand_bias_alpha: 0.05
+    strand_bias_min_strand_reads: 1
+
+  # Chiamata Eteroplasmie: Profilo Ristretto (Gating degradato / Contaminazione)
+  restricted_heteroplasmy:
+    min_depth: 20
+    min_alt_reads: 5
+    min_vaf: 0.25
+    max_vaf: 0.75
+
+  # Regioni diagnostiche ipervariabili per audit QC (HVS-I & HVS-II)
+  regions:
+    hvs1_start: 16024
+    hvs1_end: 16383
+    hvs2_start: 73
+    hvs2_end: 340
 
 # ------------------------------------------------------------------------------
 # 9. HAPLOGROUPING & VALIDATION (Blocco 7)
@@ -248,7 +271,7 @@ validation:
   enabled: true
   expected_genome_length: 16569
   max_n_percentage: 15.0
-  strict_mode: true                   # MODIFICATO: true (eleva ogni warning di QC a FAIL fatale)
+  strict_mode: false
 
 # ------------------------------------------------------------------------------
 # 10. OUTPUT DIRECTORIES & STORAGE
