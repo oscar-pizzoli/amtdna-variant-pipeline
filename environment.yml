@@ -1,30 +1,39 @@
 name: adna_qc
 channels:
-- conda-forge
-- bioconda
-- defaults
+  - conda-forge
+  - bioconda
+  - nodefaults
 dependencies:
-- typeguard
-- pyyaml
-- python=3.12
-- samtools
-- multiqc
-- mapdamage2
-- parallel
-- gawk
-- bcftools
-- mafft
-- bedtools
-- bwa
-- adapterremoval=2.3.3
-- pysam
-- pytest
-- sra-tools
-- pmdtools
-- make
-- gxx_linux-64
-- gcc_linux-64
-- perl
-- r-base
-- cmake
-- scipy
+  # Core Language & Interpreters
+  - python=3.12
+  - perl
+  - r-base
+
+  # Bioinformatic Tools (Blocks 1 -> 7)
+  - bwa
+  - samtools
+  - bcftools
+  - bedtools
+  - mafft
+  - adapterremoval=2.3.3
+  - mapdamage2
+  - pmdtools
+  - haplogrep3              # Essenziale per il Blocco 7
+  - multiqc
+  - sra-tools
+
+  # Python Libraries & Bindings
+  - pysam
+  - scipy
+  - pyyaml
+  - typeguard
+  - pytest
+  - pip
+
+  # System Utilities & Build Essentials
+  - parallel
+  - gawk
+  - make
+  - cmake
+  - gcc_linux-64
+  - gxx_linux-64

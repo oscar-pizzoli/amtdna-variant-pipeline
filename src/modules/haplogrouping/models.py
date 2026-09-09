@@ -92,10 +92,7 @@ class RawHaplogrepResult:
 
 @dataclass(frozen=True)
 class PrivateMutationAssessment:
-    """
-    Evaluates private variant chemistry against authenticity triage.
-    Spatial position within reads is audited in downstream BAM stages.
-    """
+    """Evaluates private variant chemistry against authenticity triage."""
     mutation: str
     position: int
     ref_base: str
@@ -194,6 +191,14 @@ class CrossBlockAuditResult:
             if p.classification == PrivateMutationDamageClass.TRANSVERSION_NON_DAMAGE
         ]
 
+    @property
+    def spatial_verified_mutations(self) -> List[str]:
+        return [
+            p.mutation
+            for p in self.private_mutations_assessment
+            if p.classification == PrivateMutationDamageClass.TRANSITION_SPATIAL_VERIFIED
+        ]
+
 
 @dataclass(frozen=True)
 class HaplogroupResult:
@@ -210,8 +215,9 @@ class HaplogroupResult:
     vcf_details: Optional[RawHaplogrepResult] = None
 
 
-# Compatibility alias to avoid contract drift
+# Compatibility alias to prevent contract drift
 HaplogrepResult = HaplogroupResult
+
 
 @dataclass(frozen=True)
 class ValidationResult:

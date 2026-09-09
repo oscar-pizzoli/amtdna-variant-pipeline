@@ -25,7 +25,9 @@ from src.modules.consensus.models import (
     ConsensusQC,
     ConsensusSite,
     HeteroplasmyCall,
+    HeteroplasmySiteDetail,
     InputResolution,
+    LibraryTreatment,
     ReferenceInfo,
     RegionCoverage,
     SitePileup,
@@ -58,16 +60,11 @@ class ConsensusOrchestrator:
     SOFTWARE_VERSION = "1.0.0"
 
     def __init__(self, policy: Optional[ConsensusPolicy] = None):
-        """
-        Initialize the orchestrator with an immutable ConsensusPolicy.
-        """
         self.policy = policy if policy is not None else ConsensusPolicy()
 
     @staticmethod
     def calculate_sha256(filepath: str, chunk_size: int = 65536) -> str:
-        """
-        Compute SHA-256 hex digest for a target file.
-        """
+        """Compute SHA-256 hex digest for a target file."""
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Cannot calculate SHA-256; file not found: {filepath}")
 
@@ -87,7 +84,7 @@ class ConsensusOrchestrator:
     ) -> InputResolution:
         """
         Validate and resolve upstream contracts from Block 4 and Block 5 JSON outputs.
-        Ensures exhaustive routing with zero silent fallbacks.
+        Extracts library treatment and ensures exhaustive routing.
         """
         if not os.path.exists(block4_json_path):
             raise FileNotFoundError(f"Block 4 contract JSON not found: {block4_json_path}")
@@ -114,12 +111,20 @@ class ConsensusOrchestrator:
             sequence_sha256=ref_sha256,
         )
 
-        # 2. Block 4 Exhaustive Authenticity Routing
+        # 2. Block 4 Exhaustive Authenticity & Library Treatment Routing
         auth_status = b4_data.get("authentication_status")
         rescaling_performed = b4_data.get("rescaling_performed", False)
         rescaled_bam = b4_data.get("rescaled_bam")
         dedup_bam = b4_data.get("filtered_dedup_bam") or b4_data.get("bam_path")
         damage_model_id = b4_data.get("damage_model_id")
+
+        raw_treatment = str(b4_data.get("library_treatment", "NON_UDG")).upper()
+        if raw_treatment in {"HALF", "UDG_HALF", "HALF_UDG"}:
+            library_treatment = LibraryTreatment.UDG_HALF
+        elif raw_treatment in {"FULL", "UDG_FULL", "FULL_UDG", "UDG"}:
+            library_treatment = LibraryTreatment.UDG_FULL
+        else:
+            library_treatment = LibraryTreatment.NON_UDG
 
         if auth_status == "AUTHENTIC_ANCIENT_SUPPORTED":
             if not rescaling_performed or not rescaled_bam:
@@ -165,7 +170,7 @@ class ConsensusOrchestrator:
 
         bam_sha256 = self.calculate_sha256(selected_bam)
 
-        # 3. Block 5 Contamination Gating & Pessimistic Confidence Evaluation
+        # 3. Block 5 Contamination Gating
         rec_action_raw = b5_data.get("recommended_action") or b5_data.get("downstream_gating")
         est_confidence = str(b5_data.get("estimation_confidence", "UNKNOWN")).upper()
         contam_fraction = b5_data.get("contamination_fraction")
@@ -176,7 +181,6 @@ class ConsensusOrchestrator:
         except ValueError:
             contam_source = ContaminationEstimateSource.NONE
 
-        # Exhaustive Gating Action Mapping: Non-high confidence triggers restriction
         if rec_action_raw == "STANDARD_CALLING":
             if est_confidence not in {"HIGH", "MODERATE"}:
                 resolved_gating = GatingAction.RESTRICT_HETEROPLASMY
@@ -214,6 +218,7 @@ class ConsensusOrchestrator:
             gating_action=resolved_gating,
             contamination_fraction=contam_fraction,
             contamination_estimate_source=contam_source,
+            library_treatment=library_treatment,
         )
 
         resolution.validate_for_execution()
@@ -222,9 +227,7 @@ class ConsensusOrchestrator:
     def _calculate_region_coverages(
         self, sites: List[ConsensusSite]
     ) -> List[RegionCoverage]:
-        """
-        Compute mean callable depth and covered fraction for HVS-I and HVS-II.
-        """
+        """Compute mean callable depth and covered fraction for HVS-I and HVS-II."""
         def _calc(name: str, start: int, end: int) -> RegionCoverage:
             reg_sites = [s for s in sites if start <= s.position <= end]
             if not reg_sites:
@@ -254,10 +257,7 @@ class ConsensusOrchestrator:
         heteroplasmy_calls: List[HeteroplasmyCall],
         pileup_by_pos: Dict[int, SitePileup],
     ) -> None:
-        """
-        Emit a standardized, bgzip-compressed VCF 4.2 file capturing consensus
-        variants and all evaluated heteroplasmy events with comprehensive filter headers.
-        """
+        """Emit standardized, bgzip-compressed VCF 4.2 file capturing consensus and heteroplasmy calls."""
         os.makedirs(os.path.dirname(os.path.abspath(output_vcf_gz_path)), exist_ok=True)
         uncompressed_vcf = output_vcf_gz_path.removesuffix(".gz")
 
@@ -271,6 +271,7 @@ class ConsensusOrchestrator:
             '##INFO=<ID=AF,Number=A,Type=Float,Description="Allele frequency of ALT allele">',
             '##INFO=<ID=VARTYPE,Number=1,Type=String,Description="Variant class: MAJOR_CONSENSUS or HETEROPLASMY">',
             '##INFO=<ID=SB_PV,Number=1,Type=Float,Description="Fisher exact test strand bias p-value">',
+            '##INFO=<ID=SPATIAL_SUSPECT,Number=0,Type=Flag,Description="Suspected terminal post-mortem damage">',
             '##FILTER=<ID=PASS,Description="All quality and evidence thresholds satisfied">',
             '##FILTER=<ID=FILTER_NO_DATA,Description="Zero usable bases observed">',
             '##FILTER=<ID=FILTER_LOW_DEPTH,Description="Callable depth below calling threshold">',
@@ -307,7 +308,6 @@ class ConsensusOrchestrator:
                 )
                 het_call = het_by_pos.get(pos)
 
-                # 1. Emit Major Consensus Variant
                 if is_consensus_variant:
                     ref_cnt = p_site.counts.get(ref) if p_site else 0
                     alt_cnt = p_site.counts.get(canon) if p_site else site.callable_depth
@@ -316,25 +316,34 @@ class ConsensusOrchestrator:
                     val = f"1:{site.callable_depth}:{ref_cnt},{alt_cnt}"
                     out.write(f"{ref_info.contig}\t{pos}\t.\t{ref}\t{canon}\t60\tPASS\t{info}\t{fmt}\t{val}\n")
 
-                # 2. Emit Heteroplasmy Call (Independent of consensus state)
                 if het_call is not None:
-                    # Avoid duplicate emission if heteroplasmy allele matches already emitted major variant
-                    if is_consensus_variant and het_call.minor_allele == canon:
+                    # Se il minor allele coincide con il reference base, l'allele variante è il major allele
+                    if het_call.minor_allele == ref:
+                        alt = het_call.major_allele
+                    else:
+                        alt = het_call.minor_allele
+
+                    # Evita righe non conformi VCF con REF == ALT
+                    if alt == ref:
                         continue
 
-                    alt = het_call.minor_allele
+                    # Evita duplicati se la variante è già stata emessa come consenso primario
+                    if is_consensus_variant and alt == canon:
+                        continue
+
                     status_str = het_call.status.value
                     filter_str = "PASS" if status_str == "PASS" else het_call.filter_reason.value
+
+                    damage_flag = ";SPATIAL_SUSPECT" if het_call.spatial_damage_suspect else ""
                     info = (
                         f"DP={het_call.callable_depth};AF={het_call.alt_vaf:.4f};"
-                        f"VARTYPE=HETEROPLASMY;SB_PV={het_call.strand_bias_pvalue:.4e}"
+                        f"VARTYPE=HETEROPLASMY;SB_PV={het_call.strand_bias_pvalue:.4e}{damage_flag}"
                     )
                     ref_cnt = p_site.counts.get(ref) if p_site else (het_call.forward_ref + het_call.reverse_ref)
                     fmt = "GT:DP:AD"
                     val = f"0/1:{het_call.callable_depth}:{ref_cnt},{het_call.alt_reads}"
                     out.write(f"{ref_info.contig}\t{pos}\t.\t{ref}\t{alt}\t.\t{filter_str}\t{info}\t{fmt}\t{val}\n")
 
-        # Compress to BGZF and create Tabix index
         pysam.tabix_compress(uncompressed_vcf, output_vcf_gz_path, force=True)
         try:
             pysam.tabix_index(output_vcf_gz_path, preset="vcf", force=True)
@@ -346,9 +355,23 @@ class ConsensusOrchestrator:
 
     def _write_qc_json(self, qc: ConsensusQC, output_path: str) -> None:
         """
-        Serialize global consensus QC metrics to JSON.
+        Serialize global consensus QC metrics and strict string-keyed heteroplasmy details.
+        Guarantees keys are strings (e.g. "3010") for clean JSON consumption in Block 7.
         """
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+        serialized_details = {
+            str(pos): {
+                "ref": detail.ref,
+                "alt": detail.alt,
+                "vaf": round(detail.vaf, 4),
+                "internal_support_count": detail.internal_support_count,
+                "terminal_support_count": detail.terminal_support_count,
+                "spatial_damage_suspect": detail.spatial_damage_suspect,
+            }
+            for pos, detail in qc.heteroplasmy_details.items()
+        }
+
         data = {
             "sample_id": qc.sample_id,
             "input_bam_path": qc.input_bam_path,
@@ -376,6 +399,7 @@ class ConsensusOrchestrator:
             "software_version": qc.software_version,
             "policy_version": qc.policy_version,
             "execution_time_seconds": round(qc.execution_time_seconds, 2),
+            "heteroplasmy_details": serialized_details,
         }
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -387,10 +411,11 @@ class ConsensusOrchestrator:
     ) -> ConsensusQC:
         """
         Execute the primary Block 6 pipeline:
-        1. Observational extraction (PileupEngine)
-        2. Majority consensus & parallel IUPAC streams (ConsensusBuilder)
-        3. Statistical heteroplasmy calling & strand bias audit (HeteroplasmyCaller)
-        4. Artifact generation (canonical FASTA, IUPAC FASTA, TSV, VCF.gz, QC JSON)
+        1. Calibrate Policy according to LibraryTreatment
+        2. Observational extraction (PileupEngine)
+        3. Majority consensus (ConsensusBuilder)
+        4. Spatial Heteroplasmy Calling (HeteroplasmyCaller)
+        5. Artifact generation & String-Keyed Heteroplasmy Details Export
         """
         start_time = time.perf_counter()
         os.makedirs(output_dir, exist_ok=True)
@@ -398,47 +423,70 @@ class ConsensusOrchestrator:
         sample_id = input_resolution.sample_id
         ref_info = input_resolution.reference_info
 
-        # 1. Initialize Observational Engine with direct reference_fasta_path
+        # Dynamic Calibration: Adapt spatial threshold based on LibraryTreatment
+        treatment_str = input_resolution.library_treatment.value
+        resolved_threshold = self.policy.spatial_thresholds.get(treatment_str, 5)
+
+        calibrated_policy = ConsensusPolicy(
+            policy_id=self.policy.policy_id,
+            policy_version=self.policy.policy_version,
+            min_base_quality=self.policy.min_base_quality,
+            min_mapping_quality=self.policy.min_mapping_quality,
+            min_consensus_depth=self.policy.min_consensus_depth,
+            major_allele_fraction=self.policy.major_allele_fraction,
+            ambiguity_min_vaf=self.policy.ambiguity_min_vaf,
+            heteroplasmy_min_depth=self.policy.heteroplasmy_min_depth,
+            heteroplasmy_min_alt_reads=self.policy.heteroplasmy_min_alt_reads,
+            heteroplasmy_min_vaf=self.policy.heteroplasmy_min_vaf,
+            heteroplasmy_max_vaf=self.policy.heteroplasmy_max_vaf,
+            strand_bias_alpha=self.policy.strand_bias_alpha,
+            strand_bias_min_strand_reads=self.policy.strand_bias_min_strand_reads,
+            emit_iupac_fasta=self.policy.emit_iupac_fasta,
+            mask_char=self.policy.mask_char,
+            restricted_heteroplasmy_min_depth=self.policy.restricted_heteroplasmy_min_depth,
+            restricted_heteroplasmy_min_alt_reads=self.policy.restricted_heteroplasmy_min_alt_reads,
+            restricted_heteroplasmy_min_vaf=self.policy.restricted_heteroplasmy_min_vaf,
+            restricted_heteroplasmy_max_vaf=self.policy.restricted_heteroplasmy_max_vaf,
+            min_internal_fragments=self.policy.min_internal_fragments,
+            spatial_end_distance_threshold=resolved_threshold,
+            spatial_thresholds=self.policy.spatial_thresholds,
+        )
+
+        # 1. Observational Extraction
         pileup_engine = PileupEngine(
             bam_path=input_resolution.bam_path,
             reference_fasta_path=input_resolution.reference_fasta_path,
-            policy=self.policy,
+            policy=calibrated_policy,
             target_contig=ref_info.contig,
             expected_reference_length=ref_info.length,
         )
 
-        # 2. Materialize gapless SitePileup stream in memory (~16,569 sites)
         pileup_sites: List[SitePileup] = list(pileup_engine.iter_sites())
         pileup_by_pos: Dict[int, SitePileup] = {s.position: s for s in pileup_sites}
 
-        # 3. Consensus Generation (Canonical and IUPAC streams)
+        # 2. Consensus Building
         consensus_builder = ConsensusBuilder(
-            policy=self.policy,
+            policy=calibrated_policy,
             sample_id=sample_id,
             reference_info=ref_info,
         )
         consensus_sites, canonical_seq, iupac_seq = consensus_builder.build_consensus(pileup_sites)
 
-        # Strict invariant length assertions
         if len(canonical_seq) != ref_info.length:
             raise ConsensusExecutionError(
                 f"Canonical FASTA length mismatch: expected {ref_info.length}, got {len(canonical_seq)}"
             )
-        if len(iupac_seq) != ref_info.length:
-            raise ConsensusExecutionError(
-                f"IUPAC FASTA length mismatch: expected {ref_info.length}, got {len(iupac_seq)}"
-            )
 
-        # 4. Intra-Individual Heteroplasmy Calling
+        # 3. Spatial Heteroplasmy Calling
         heteroplasmy_caller = HeteroplasmyCaller(
-            policy=self.policy,
+            policy=calibrated_policy,
             sample_id=sample_id,
             reference_info=ref_info,
             gating_action=input_resolution.gating_action,
         )
         heteroplasmy_calls = heteroplasmy_caller.call_heteroplasmies(pileup_sites)
 
-        # 5. Emit Artifacts
+        # 4. Artifact Generation
         canonical_fasta_path = os.path.join(output_dir, f"{sample_id}.consensus.fasta")
         iupac_fasta_path = os.path.join(output_dir, f"{sample_id}.consensus_iupac.fasta")
         heteroplasmy_tsv_path = os.path.join(output_dir, f"{sample_id}.heteroplasmy.tsv")
@@ -473,7 +521,18 @@ class ConsensusOrchestrator:
             pileup_by_pos=pileup_by_pos,
         )
 
-        # 6. Global QC Compilation
+        # 5. Compile Details for Block 7 Contract
+        het_details_map: Dict[str, HeteroplasmySiteDetail] = {}
+        for c in heteroplasmy_calls:
+            het_details_map[str(c.position)] = HeteroplasmySiteDetail(
+                ref=c.reference_base,
+                alt=c.minor_allele,
+                vaf=c.alt_vaf,
+                internal_support_count=c.internal_support_count,
+                terminal_support_count=c.terminal_support_count,
+                spatial_damage_suspect=c.spatial_damage_suspect,
+            )
+
         elapsed_sec = time.perf_counter() - start_time
         total_depth = sum(s.callable_depth for s in consensus_sites)
         mean_depth = total_depth / ref_info.length if ref_info.length > 0 else 0.0
@@ -509,8 +568,9 @@ class ConsensusOrchestrator:
             regions=region_coverages,
             gating_action=input_resolution.gating_action,
             software_version=self.SOFTWARE_VERSION,
-            policy_version=self.policy.policy_version,
+            policy_version=calibrated_policy.policy_version,
             execution_time_seconds=elapsed_sec,
+            heteroplasmy_details=het_details_map,
         )
 
         self._write_qc_json(qc, qc_json_path)

@@ -10,93 +10,75 @@ project:
 resources:
   threads: 8
   max_memory_gb: 16
-  cpu_budget_fraction: 0.50            # Frazione di CPU host allocata al batch (default: 50%)
-  host_cores_override: null            # Opzionale: fissa i core fisici totali (es. 16 su job/cluster HPC)
+  cpu_budget_fraction: 0.50
+  host_cores_override: null
 
-# ------------------------------------------------------------------------------
-# 1. INPUT & DISCOVERY (Blocco 2)
-# ------------------------------------------------------------------------------
 input:
-  data_type: "FASTQ"                  # Opzioni: "FASTQ", "BAM"
-  input_dir: "data/raw_fastq"         # Cartella contenente i file FASTQ o BAM
-  pattern_r1: "*.fastq.gz"            # Pattern di matching per il forward read
-  pattern_r2: ""                      # Pattern di matching per il reverse read
-  single_end: true                    # Se true, forza la pipeline in modalità Single-End
-  allow_missing_mates: false          # Se true, tollera R1 orfani declassandoli a SE invece di fallire
+  data_type: "FASTQ"
+  input_dir: "data/raw_fastq"
+  pattern_r1: "*.fastq.gz"
+  pattern_r2: ""
+  single_end: true
+  allow_missing_mates: false
 
 integrity:
-  mode: "fast"                        # Opzioni: "fast" (controllo I/O rapido), "strict" (SHA-256 totale + sync headers)
+  mode: "fast"
 
-# ------------------------------------------------------------------------------
-# 2. REFERENCE GENOME (Blocco 1 & 3)
-# ------------------------------------------------------------------------------
 reference:
   fasta_path: "data/reference/rCRS.fasta"
   expected_contig: "NC_012920.1"
-  strict_contig: true                 # true = rifiuta FASTA con nomi non canonici; false = accetta alias (chrM, MT)
-  expected_length: 16569              # Verifica esatta della lunghezza in bp (null per disabilitare)
-  expected_sequence_md5: null         # Es. "c68f52674c9fb33aef52dcf3f03b1185" per rCRS esatto, o null
-  is_circular: true                   # Flag passato ai moduli di alignment e consensus
-  allow_n: true                       # true = ammette 'N'; false = solo basi canoniche ACGT
-  auto_index: true                    # Genera in automatico indici BWA (.bwt, .sa, ecc.) e FAI (.fai)
+  strict_contig: true
+  expected_length: 16569
+  expected_sequence_md5: null
+  is_circular: true
+  allow_n: true
+  auto_index: true
 
-# ------------------------------------------------------------------------------
-# 3. PREPROCESSING & READ MERGING (Blocco 2)
-# ------------------------------------------------------------------------------
 preprocessing:
-  tool: "AdapterRemoval"              # Backend di trimming/merging
-  min_read_length: 30                 # Soglia di lunghezza minima post-trimming (bp)
-  min_merge_overlap: 11               # Overlap minimo per collassare coppie di mate (bp)
-  collapse_reads: true                # Esegue read merging per frammenti sovrapposti
-  trim_ns: true                       # Trimming conservativo delle sole basi N terminali
+  tool: "AdapterRemoval"
+  min_read_length: 30
+  min_merge_overlap: 11
+  collapse_reads: true
+  trim_ns: true
 
-# ------------------------------------------------------------------------------
-# 4. ALIGNMENT & STRUCTURAL PREPARATION (Blocco 3)
-# ------------------------------------------------------------------------------
 alignment:
   aligner: "bwa-aln"
   threads: 4
-  parallel_aln: true                  # Esegue bwa aln su R1 ed R2 in parallelo (ThreadPoolExecutor)
-  keep_temporary_sai: false           # Se true, conserva i file intermedi .sai su disco
-  keep_raw_merged_bam: true           # Conserva sample.merged.raw.bam per audit di ricerca
-  cleanup_on_failure: true            # Rimuove file intermedi/parziali in caso di errore
+  parallel_aln: true
+  keep_temporary_sai: false
+  keep_raw_merged_bam: true
+  cleanup_on_failure: true
 
   bwa_aln:
-    seed_length: 1000                 # Flag -l: 1000 disabilita il seed per frammenti aDNA corti
-    max_diff: 0.01                    # Flag -n: 0.01 permette tolleranza di mismatch per deaminazioni
-    max_gap_opens: 2                  # Flag -o: numero massimo di gap aperti
-    max_gap_extensions: -1            # Flag -e: gap extensions (-1 = default BWA)
-    trim_quality_threshold: 0         # Flag -q: trimming di qualità terminale (0 = disabilitato)
+    seed_length: 1000
+    max_diff: 0.01
+    max_gap_opens: 2
+    max_gap_extensions: -1
+    trim_quality_threshold: 0
 
   read_group:
     platform: "ILLUMINA"
     center: "LAB"
 
-# ------------------------------------------------------------------------------
-# 5. DEDUPLICATION & FILTERING (Blocco 3)
-# ------------------------------------------------------------------------------
 deduplication:
-  mode: "both"                        # Opzioni: "both" (.markdup.bam e .dedup.bam), "mark", "remove"
-  use_csi: false                      # Se true genera indici .csi anziché .bai standard
+  mode: "both"
+  use_csi: false
   threads: 4
 
 filtering:
-  fast_mode: false                    # Se true salta il profiling dettagliato Python per massima velocità
+  fast_mode: false
   multimapping:
-    min_mapq: 30                      # Soglia minima MAPQ
-    filter_unmapped: true             # Rimuove record non mappati (flag 0x4)
-    filter_secondary: true            # Rimuove allineamenti secondari (flag 0x100)
-    filter_supplementary: true        # Rimuove allineamenti supplementari/chimerici (flag 0x800)
-    inspect_mapper_tags: false        # Controllo opzionale tag BWA (XT:A:R, XA:Z, X1 > 0)
+    min_mapq: 30
+    filter_unmapped: true
+    filter_secondary: true
+    filter_supplementary: true
+    inspect_mapper_tags: false
 
   thresholds:
-    min_breadth_3x_fraction: 0.80     # Alert WARN se la copertura rCRS >= 3x scende sotto l'80%
-    max_duplication_rate_fraction: 0.85 # Alert WARN se il tasso di duplicazione supera l'85%
-    min_mean_depth: 3.0               # Alert WARN se la profondità media è < 3.0x
+    min_breadth_3x_fraction: 0.80
+    max_duplication_rate_fraction: 0.85
+    min_mean_depth: 3.0
 
-# ------------------------------------------------------------------------------
-# 6. aDNA AUTHENTICATION & DAMAGE (Blocco 4)
-# ------------------------------------------------------------------------------
 damage:
   policy_id: "adna_standard_v1"
   input_bam_type: "FILTERED_DEDUP"
@@ -143,32 +125,29 @@ damage:
       partial_max_pos2_to_pos1_ratio: 0.70
       partial_min_pos2_damage_floor: 0.03
 
-# ------------------------------------------------------------------------------
-# 7. CONTAMINATION ESTIMATION, PRE-SCREENING & GATING (Blocco 5)
-# ------------------------------------------------------------------------------
 contamination:
   enabled: true
-  method: "SCHMUTZI"                  # Opzioni: "SCHMUTZI", "FAST_SCREEN_TRIAGE", "DISSENT_SCREENING"
+  method: "SCHMUTZI"
   allow_fallback_to_dissent: false
 
   fast_screening:
-    enabled: true                     # true = abilita il pre-screening triage e il fast bypass
+    enabled: true
     algorithm_version: "fast-screen-v2.0"
     diagnostic_panel_path: "data/reference/diagnostic_sites_phylotree17.tsv"
     diagnostic_panel_version: "phylotree17_v1"
-    escalate_dissenting_sites_min: 3  # Se >= 3 siti mostrano dissenso allelico -> ESCALATE
-    escalate_vaf_threshold: 0.02      # Se VAF alternativa >= 2.0% -> ESCALATE
-    min_alt_reads_per_site: 2         # Minimo 2 letture fisiche alternative a supporto
-    min_depth_for_screen: 10.0        # Depth minima diagnostica per validare lo screening
-    min_genome_depth: 10.0            # Profondità media genomica globale su mtDNA
-    min_evaluated_sites: 50           # Numero minimo di posizioni diagnostiche con copertura valida
-    min_panel_evaluation_fraction: 0.25 # Frazione minima di siti del pannello coperti (25%)
-    min_base_quality: 30              # Qualità Phred minima per singola base
-    min_mapping_quality: 30           # MAPQ minima per lettura
-    min_depth_per_site: 10            # Copertura minima per includere una posizione diagnostica
-    noise_vaf_floor: 0.015            # Soglia rumore di fondo VAF (1.5%)
-    cache_screen_results: true        # Salva e riusa FastScreenResult su disco
-    cache_mode: "strict"              # "strict" (SHA-256 BAM) | "fast" (mtime + size)
+    escalate_dissenting_sites_min: 3
+    escalate_vaf_threshold: 0.02
+    min_alt_reads_per_site: 2
+    min_depth_for_screen: 10.0
+    min_genome_depth: 10.0
+    min_evaluated_sites: 50
+    min_panel_evaluation_fraction: 0.25
+    min_base_quality: 30
+    min_mapping_quality: 30
+    min_depth_per_site: 10
+    noise_vaf_floor: 0.015
+    cache_screen_results: true
+    cache_mode: "strict"
 
     panel_builder:
       min_maf: 0.02
@@ -187,7 +166,6 @@ contamination:
     max_iterations: 10
     library_treatment: "NONE"
     use_wrapped_reference: false
-
     use_container: "auto"
     container_engine: "docker"
     container_image: "quay.io/biocontainers/schmutzi:1.5.6--h9a82719_1"
@@ -211,9 +189,6 @@ contamination:
     min_informative_sites: 10
     pmd_filtering_threshold: 3.0
 
-# ------------------------------------------------------------------------------
-# 8. CONSENSUS & HETEROPLASMY ENGINE (Blocco 6)
-# ------------------------------------------------------------------------------
 consensus:
   policy_id: "consensus_strict_v1"
   policy_version: "1.0.0"
@@ -236,6 +211,13 @@ consensus:
     strand_bias_alpha: 0.05
     strand_bias_min_strand_reads: 1
 
+    # Spatial Damage Authentication Thresholds
+    min_internal_fragments: 2
+    spatial_thresholds:
+      NON_UDG: 5
+      UDG_HALF: 2
+      UDG_FULL: 0
+
   restricted_heteroplasmy:
     min_depth: 20
     min_alt_reads: 5
@@ -248,36 +230,29 @@ consensus:
     hvs2_start: 73
     hvs2_end: 340
 
-# ------------------------------------------------------------------------------
-# 9. HAPLOGROUPING & PHYLOGENETIC VALIDATION (Blocco 7)
-# ------------------------------------------------------------------------------
 haplogroup:
   tool: "haplogrep3"
-  # Alberi supportati: phylotree-rcrs@17.0, phylotree-fu-rcrs@1.2
   tree_id: "phylotree-fu-rcrs"
   tree_version: "1.2"
-  metric: "kulczynski"
-  min_quality_score: 0.80             # Soglia per ASSIGNED_CONFIDENT
-  cross_check_vcf: true               # Esegue Run B comparativo su VCF
-  timeout_seconds: 300                # Timeout subprocess per classificazione CLI (s)
-  retain_raw_output: true             # Salva sample.haplogrep.<type>.raw.json per audit
+  metric: "KULCZYNSKI"                 # <-- ERA "kulczynski", METTERE IN MAIUSCOLO
+  min_quality_score: 0.80
+  cross_check_vcf: true
+  timeout_seconds: 300
+  retain_raw_output: true
 
 validation:
-  sequence_type: "CANONICAL"          # "CANONICAL" (ACGTN) | "IUPAC" (inclusi caratteri degenerati)
-  max_n_percentage: 15.0              # Frazione massima di 'N' ammesse nel consensus (0-100)
+  sequence_type: "CANONICAL"
+  max_n_percentage: 15.0
 
 cross_block_audit:
-  min_quality_score: 0.80             # Quality score floor per LOW_HAPLOGROUP_CONFIDENCE
-  max_missing_diagnostic_mutations: 2 # Allerta se mancano mutazioni chiave del nodo
-  max_private_mutations: 5            # Allerta per sospetto ipermutato o artefatti
-  contam_affinity_threshold: 0.015    # Soglia contaminazione (1.5%) per warning affinità contaminante
-  subclade_contam_max_fraction: 0.03  # Tetto contaminazione (3.0%) per rigetto shift di sub-clade
-  evaluate_contaminant_closeness: true # Abilita cross-check con aplotipo contaminante (Blocco 5)
-  flag_damage_in_private_mutations: true # Abilita triage chimico transizioni su aDNA (Blocco 4)
+  min_quality_score: 0.80
+  max_missing_diagnostic_mutations: 2
+  max_private_mutations: 5
+  contam_affinity_threshold: 0.015
+  subclade_contam_max_fraction: 0.03
+  evaluate_contaminant_closeness: true
+  flag_damage_in_private_mutations: true
 
-# ------------------------------------------------------------------------------
-# 10. OUTPUT DIRECTORIES & STORAGE
-# ------------------------------------------------------------------------------
 output:
   results_dir: "results"
   save_intermediate_bams: false

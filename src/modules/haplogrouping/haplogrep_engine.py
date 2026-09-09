@@ -1,8 +1,11 @@
 """
 Block 7 HaploGrep3 Execution Engine: CLI wrapper handling binary inspection,
 versioned phylogeny parameterization, quality margin resolution, and strict metric bounding.
+Supports native HaploGrep3 TSV output as well as legacy JSON payloads.
 """
 
+import csv
+import io
 import json
 import logging
 import re
@@ -84,17 +87,20 @@ class HaplogrepEngine:
             raise FileNotFoundError(f"Input {input_type.upper()} file not found: {input_path}")
 
         tree_spec = f"{self.config.tree_id}@{self.config.tree_version}"
+        metric_str = str(self.config.metric).upper()
         persisted_raw_path: Optional[str] = None
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_json = Path(tmp_dir) / f"{sample_id}_{input_type}.json"
+            tmp_out = Path(tmp_dir) / f"{sample_id}_{input_type}.txt"
             cmd = [
                 self._binary_path,
                 "classify",
                 "--in", str(input_path),
-                "--out", str(tmp_json),
+                "--out", str(tmp_out),
                 "--tree", tree_spec,
-                "--metric", self.config.metric,
+                "--metric", metric_str,
+                "--extend-report",
+                "--hits", "5",
             ]
 
             logger.info(f"[{sample_id}] Executing HaploGrep3 ({input_type}): {' '.join(cmd)}")
@@ -115,22 +121,140 @@ class HaplogrepEngine:
                     f"HaploGrep3 {input_type} failed for '{sample_id}' (exit {err.returncode}):\n{err.stderr}"
                 )
 
-            if not tmp_json.is_file() or tmp_json.stat().st_size == 0:
-                raise HaplogrepExecutionError(f"HaploGrep3 did not generate output JSON for '{sample_id}'.")
+            if not tmp_out.is_file() or tmp_out.stat().st_size == 0:
+                raise HaplogrepExecutionError(f"HaploGrep3 did not generate output for '{sample_id}'.")
 
-            with open(tmp_json, "r", encoding="utf-8") as f:
-                try:
-                    payload = json.load(f)
-                except json.JSONDecodeError as err:
-                    raise HaplogrepExecutionError(f"Malformed JSON from HaploGrep3 for '{sample_id}': {err}")
+            with open(tmp_out, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            if not content.strip():
+                raise HaplogrepExecutionError(f"Empty classification output from HaploGrep3 for '{sample_id}'.")
 
             if output_dir is not None and self.config.retain_raw_output:
                 output_dir.mkdir(parents=True, exist_ok=True)
-                dest_json = output_dir / f"{sample_id}.haplogrep.{input_type}.raw.json"
-                shutil.copyfile(tmp_json, dest_json)
-                persisted_raw_path = str(dest_json)
+                dest_file = output_dir / f"{sample_id}.haplogrep.{input_type}.raw.txt"
+                shutil.copyfile(tmp_out, dest_file)
+                persisted_raw_path = str(dest_file)
 
-        return self._parse_json_payload(payload, sample_id, input_type, persisted_raw_path)
+        if content.strip().startswith(("{", "[")):
+            try:
+                payload = json.loads(content)
+                return self._parse_json_payload(payload, sample_id, input_type, persisted_raw_path)
+            except json.JSONDecodeError as err:
+                raise HaplogrepExecutionError(f"Malformed JSON payload from HaploGrep3 for '{sample_id}': {err}")
+        else:
+            return self._parse_tsv_payload(content, sample_id, input_type, persisted_raw_path)
+
+    @staticmethod
+    def _clean_tsv_polys(raw_str: Any) -> List[str]:
+        """Strip annotations like (globalPrivateMutation) and trailing exclamation marks."""
+        if not raw_str or not isinstance(raw_str, str):
+            return []
+        cleaned_str = re.sub(r"\s*\([^)]*\)", "", raw_str)
+        tokens = cleaned_str.strip().split()
+        cleaned: List[str] = []
+        for t in tokens:
+            item = t.strip().rstrip("!")
+            if item:
+                cleaned.append(item)
+        return cleaned
+
+    def _parse_tsv_payload(
+        self,
+        tsv_content: str,
+        sample_id: str,
+        input_type: str,
+        raw_path: Optional[str] = None,
+    ) -> RawHaplogrepResult:
+        """Parse native TSV output produced by HaploGrep3."""
+        reader = csv.DictReader(io.StringIO(tsv_content), delimiter="\t")
+        all_rows = list(reader)
+
+        if not all_rows:
+            raise HaplogrepExecutionError(f"No records found in HaploGrep3 TSV output for '{sample_id}'.")
+
+        normalized_rows: List[Dict[str, str]] = []
+        for r in all_rows:
+            clean_r = {
+                str(k).strip().strip('"'): (str(v).strip().strip('"') if v is not None else "")
+                for k, v in r.items()
+                if k is not None
+            }
+            normalized_rows.append(clean_r)
+
+        sample_rows: List[Dict[str, str]] = []
+        for r in normalized_rows:
+            sid = r.get("SampleID") or r.get("Sample ID") or r.get("Sample") or r.get("sample", "")
+            if sid == sample_id or len(normalized_rows) == 1:
+                sample_rows.append(r)
+
+        if not sample_rows:
+            distinct_samples = {
+                r.get("SampleID") or r.get("Sample ID") or r.get("Sample") or ""
+                for r in normalized_rows
+            }
+            if len(distinct_samples) == 1:
+                sample_rows = normalized_rows
+
+        if not sample_rows:
+            raise HaplogrepExecutionError(f"Sample '{sample_id}' not found in HaploGrep3 TSV output.")
+
+        raw_candidates: List[Tuple[HaplogrepHit, Dict[str, str]]] = []
+        for r in sample_rows:
+            hg = r.get("Haplogroup", "")
+            q_raw = r.get("Quality", "")
+            if not hg or q_raw == "":
+                continue
+            q_score = self._validate_quality_score(q_raw, sample_id)
+            raw_candidates.append((HaplogrepHit(haplogroup=hg, quality_score=q_score), r))
+
+        if not raw_candidates:
+            raise HaplogrepExecutionError(f"Sample '{sample_id}' lacks classification fields in HaploGrep3 TSV.")
+
+        raw_candidates.sort(key=lambda pair: (-pair[0].quality_score, pair[0].haplogroup))
+
+        best_hit, best_row = raw_candidates[0]
+        max_quality = best_hit.quality_score
+
+        second_quality: Optional[float] = None
+        quality_margin: Optional[float] = None
+        if len(raw_candidates) > 1:
+            second_quality = raw_candidates[1][0].quality_score
+            quality_margin = round(max_quality - second_quality, 4)
+
+        top_candidates = [
+            hit for hit, _ in raw_candidates
+            if abs(hit.quality_score - max_quality) < 1e-6
+        ]
+        co_optimal = len(top_candidates) > 1
+
+        found_muts = self._clean_tsv_polys(best_row.get("Found_Polys", ""))
+        missing_muts = self._clean_tsv_polys(best_row.get("Not_Found_Polys", ""))
+        all_private = self._clean_tsv_polys(best_row.get("Remaining_Polys", ""))
+
+        private_muts = [m for m in all_private if not m.upper().endswith("N")]
+        expected_muts = sorted(set(found_muts + missing_muts))
+
+        return RawHaplogrepResult(
+            sample_id=sample_id,
+            input_type=input_type,
+            haplogroup=best_hit.haplogroup,
+            quality_score=max_quality,
+            second_best_quality=second_quality,
+            quality_margin=quality_margin,
+            co_optimal=co_optimal,
+            top_hits=top_candidates,
+            expected_mutations=expected_muts,
+            found_mutations=found_muts,
+            missing_mutations=missing_muts,
+            private_mutations=private_muts,
+            mutation_parse_warnings=[],
+            haplogrep_version=self.detected_version,
+            tree_id=self.config.tree_id,
+            tree_version=self.config.tree_version,
+            metric=self.config.metric,
+            raw_output_path=raw_path,
+        )
 
     def _parse_json_payload(
         self,
@@ -139,6 +263,7 @@ class HaplogrepEngine:
         input_type: str,
         raw_path: Optional[str] = None,
     ) -> RawHaplogrepResult:
+        """Backward-compatible parser for JSON payloads."""
         records = data if isinstance(data, list) else data.get("samples", [data])
         if not records or not isinstance(records, list):
             raise HaplogrepExecutionError(f"No sample records found in HaploGrep3 payload for '{sample_id}'.")
@@ -180,7 +305,6 @@ class HaplogrepEngine:
                 (HaplogrepHit(haplogroup=str(hg).strip(), quality_score=q_score), sample_entry)
             )
 
-        # Deterministic sorting: quality descending, then alphabetical tie-breaker
         raw_candidates.sort(key=lambda pair: (-pair[0].quality_score, pair[0].haplogroup))
 
         best_hit, best_raw_dict = raw_candidates[0]
@@ -226,10 +350,6 @@ class HaplogrepEngine:
         )
 
     def _validate_quality_score(self, raw_value: Any, sample_id: str) -> float:
-        """
-        Strictly validate quality score based on the configured metric without heuristic scaling.
-        Kulczynski metric mathematically spans [0.0, 1.0].
-        """
         try:
             val = float(raw_value)
         except (ValueError, TypeError) as exc:
@@ -240,7 +360,7 @@ class HaplogrepEngine:
         if not (0.0 <= val <= 1.0):
             raise HaplogrepExecutionError(
                 f"Quality score {val} for '{sample_id}' violates mathematical bounds "
-                f"[0.0, 1.0] for metric '{self.config.metric}'. Tool failure or schema corruption."
+                f"[0.0, 1.0] for metric '{self.config.metric}'."
             )
 
         return round(val, 4)
@@ -255,13 +375,13 @@ class HaplogrepEngine:
 
         for item in mut_list:
             if isinstance(item, str):
-                s = item.strip()
+                s = item.strip().rstrip("!")
                 if s:
                     cleaned.append(s)
             elif isinstance(item, dict):
                 variant = item.get("mutation") or item.get("variant") or item.get("pos")
                 if variant:
-                    cleaned.append(str(variant).strip())
+                    cleaned.append(str(variant).strip().rstrip("!"))
                 else:
                     warnings.append(f"Unrecognized dict structure in '{field_name}': {item}")
             else:

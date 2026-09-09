@@ -9,10 +9,11 @@ This ensures observations in the 2x2 contingency table for Fisher's exact test
 are strictly independent, preventing artificial inflation of depth and VAF.
 """
 
-from typing import Iterable, List, Optional, Tuple
 import csv
 import math
 import os
+from typing import Iterable, List, Optional, Tuple
+
 from scipy.stats import fisher_exact
 
 from src.modules.consensus.consensus_builder import ConsensusBuilder
@@ -33,8 +34,10 @@ from src.modules.consensus.models import (
 class HeteroplasmyCaller:
     """
     Evaluates intra-individual minor base observations against callable coverage,
-    Fisher's exact strand bias test, and upstream contamination gating directives.
+    Fisher's exact strand bias test, spatial damage geometry, and upstream contamination gating.
     """
+
+    DAMAGE_TRANSITIONS = {("C", "T"), ("G", "A")}
 
     def __init__(
         self,
@@ -43,14 +46,6 @@ class HeteroplasmyCaller:
         reference_info: ReferenceInfo,
         gating_action: GatingAction = GatingAction.STANDARD_CALLING,
     ):
-        """
-        Initialize caller with operational thresholds and contamination gating status.
-
-        :param policy: ConsensusPolicy containing standard and restricted calling thresholds.
-        :param sample_id: Unique sample identifier for audit logging.
-        :param reference_info: Reference genome dimensions and provenance contract.
-        :param gating_action: Upstream contamination gating decision (Block 5).
-        """
         self.policy = policy
         self.sample_id = sample_id
         self.reference_info = reference_info
@@ -58,10 +53,7 @@ class HeteroplasmyCaller:
 
     @staticmethod
     def _get_count(counts: AlleleCounts, base: str) -> int:
-        """
-        Defensively retrieve nucleotide observation count from AlleleCounts.
-        Supports native .get() method with fallback to direct attribute inspection.
-        """
+        """Defensively retrieve nucleotide observation count from AlleleCounts."""
         if hasattr(counts, "get") and callable(getattr(counts, "get")):
             return counts.get(base)
         return getattr(counts, base.upper(), 0)
@@ -73,14 +65,7 @@ class HeteroplasmyCaller:
         fwd_minor: int,
         rev_minor: int,
     ) -> float:
-        """
-        Compute two-sided Fisher's exact test p-value on the 2x2 contingency table:
-            [[fwd_major, rev_major],
-             [fwd_minor, rev_minor]]
-
-        Measures whether the minor base distribution between strands deviates
-        significantly from the major base distribution.
-        """
+        """Compute two-sided Fisher's exact test p-value on 2x2 contingency table."""
         table = [
             [fwd_major, rev_major],
             [fwd_minor, rev_minor],
@@ -94,23 +79,16 @@ class HeteroplasmyCaller:
     def evaluate_site(self, site: SitePileup) -> Optional[HeteroplasmyCall]:
         """
         Evaluate a single observational site for heteroplasmy evidence.
-        Applies exhaustive gating action branching with zero silent fallback.
-
-        Deterministic tie-break delegated to ConsensusBuilder.rank_canonical_bases:
-        1. Observation count descending.
-        2. Reference base identity match (if counts equal, reference base wins).
-        3. Alphabetical priority fallback (A > C > G > T).
+        Computes physical fragment support distributions for damage authentication.
         """
         if site.depth_callable == 0:
             return None
 
         ref_upper = site.reference_base.upper()
-
         ranked_bases = ConsensusBuilder.rank_canonical_bases(site.counts, ref_upper)
         top1_base, top1_count = ranked_bases[0]
         top2_base, top2_count = ranked_bases[1]
 
-        # No secondary base observed
         if top2_count == 0:
             return None
 
@@ -136,6 +114,21 @@ class HeteroplasmyCaller:
         strand_pvalue_pass = strand_bias_pvalue >= self.policy.strand_bias_alpha
         strand_bias_pass = strand_reads_pass and strand_pvalue_pass
 
+        # Evaluate Spatial Molecule Geometry (Deamination vs Authentic Polimorphism)
+        alt_distances = site.allele_distances.get(top2_base, [])
+        threshold = self.policy.spatial_end_distance_threshold
+
+        internal_count = sum(1 for d in alt_distances if d > threshold)
+        terminal_count = sum(1 for d in alt_distances if d <= threshold)
+
+        is_damage_chem = (ref_upper, top2_base) in self.DAMAGE_TRANSITIONS
+        if is_damage_chem and threshold > 0:
+            # Transition with potential damage: suspect if internal support is under threshold
+            spatial_damage_suspect = internal_count < self.policy.min_internal_fragments
+        else:
+            # Transversions, indels, or UDG_FULL (threshold == 0) are not suspect
+            spatial_damage_suspect = False
+
         # Reference placeholder check (e.g. rCRS position 3107 N)
         if ref_upper not in {"A", "C", "G", "T"}:
             return HeteroplasmyCall(
@@ -156,9 +149,12 @@ class HeteroplasmyCaller:
                 status=CallStatus.FILTERED,
                 filter_reason=FilterReason.FILTER_REFERENCE_MISMATCH,
                 gating_action=self.gating_action,
+                internal_support_count=internal_count,
+                terminal_support_count=terminal_count,
+                spatial_damage_suspect=spatial_damage_suspect,
             )
 
-        # Base criteria evaluation for standard calling profile
+        # Standard Calling Profile
         std_depth_pass = site.depth_callable >= self.policy.heteroplasmy_min_depth
         std_alt_pass = alt_reads >= self.policy.heteroplasmy_min_alt_reads
         std_vaf_pass = (
@@ -166,8 +162,6 @@ class HeteroplasmyCaller:
         )
         std_pass = std_depth_pass and std_alt_pass and std_vaf_pass and strand_bias_pass
 
-        # Helper closure for restricted calling profile
-        # Helper closure for restricted calling profile
         def _eval_restricted_profile() -> Tuple[bool, bool, bool]:
             r_depth = site.depth_callable >= self.policy.restricted_heteroplasmy_min_depth
             r_alt = alt_reads >= self.policy.restricted_heteroplasmy_min_alt_reads
@@ -179,7 +173,7 @@ class HeteroplasmyCaller:
             r_pass = r_depth and r_alt and r_vaf and strand_bias_pass
             return r_pass, r_depth, r_alt
 
-        # Exhaustive Gating Action Resolution
+        # Gating Action Resolution
         if self.gating_action == GatingAction.STANDARD_CALLING:
             if std_pass:
                 status = CallStatus.PASS
@@ -214,14 +208,15 @@ class HeteroplasmyCaller:
                     filter_reason = FilterReason.FILTER_VAF_RANGE
 
         elif self.gating_action == GatingAction.PMD_FILTERING_REQUIRED:
-            # Post-mortem damage suspected: apply restricted floor and tag breach as damage
             restr_pass, r_depth_pass, r_alt_pass = _eval_restricted_profile()
-            if restr_pass:
+            if restr_pass and not spatial_damage_suspect:
                 status = CallStatus.PASS
                 filter_reason = FilterReason.PASS
             else:
                 status = CallStatus.FILTERED
-                if std_pass:
+                if spatial_damage_suspect:
+                    filter_reason = FilterReason.FILTER_DAMAGE_SUSPECT
+                elif std_pass:
                     filter_reason = FilterReason.FILTER_DAMAGE_SUSPECT
                 elif not r_depth_pass:
                     filter_reason = FilterReason.FILTER_LOW_DEPTH
@@ -233,8 +228,6 @@ class HeteroplasmyCaller:
                     filter_reason = FilterReason.FILTER_DAMAGE_SUSPECT
 
         elif self.gating_action == GatingAction.USE_ENDOGENOUS_SCHMUTZI_CONSENSUS:
-            # Sample contamination resolved upstream via Schmutzi endogenous consensus.
-            # Local BAM heteroplasmies are restricted to ultra-high confidence calls.
             restr_pass, r_depth_pass, r_alt_pass = _eval_restricted_profile()
             if restr_pass:
                 status = CallStatus.PASS
@@ -272,15 +265,15 @@ class HeteroplasmyCaller:
             status=status,
             filter_reason=filter_reason,
             gating_action=self.gating_action,
+            internal_support_count=internal_count,
+            terminal_support_count=terminal_count,
+            spatial_damage_suspect=spatial_damage_suspect,
         )
 
     def call_heteroplasmies(
         self, pileup_stream: Iterable[SitePileup]
     ) -> List[HeteroplasmyCall]:
-        """
-        Stream through observational site records and compile the complete
-        audit list of candidate heteroplasmy calls.
-        """
+        """Stream observational sites and compile candidate heteroplasmy calls."""
         calls: List[HeteroplasmyCall] = []
         for site in pileup_stream:
             call = self.evaluate_site(site)
@@ -290,10 +283,7 @@ class HeteroplasmyCaller:
 
     @staticmethod
     def write_tsv(calls: List[HeteroplasmyCall], output_path: str) -> None:
-        """
-        Write all heteroplasmy calls (PASS and FILTERED) to an audit-ready TSV file.
-        Missing quality averages are serialized explicitly as 'NA'.
-        """
+        """Write all evaluated calls to TSV audit log."""
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         headers = [
             "position",
@@ -313,6 +303,9 @@ class HeteroplasmyCaller:
             "status",
             "filter_reason",
             "gating_action",
+            "internal_support_count",
+            "terminal_support_count",
+            "spatial_damage_suspect",
         ]
 
         with open(output_path, "w", newline="", encoding="utf-8") as tsvfile:
@@ -340,4 +333,7 @@ class HeteroplasmyCaller:
                     call.status.value,
                     call.filter_reason.value,
                     call.gating_action.value,
+                    call.internal_support_count,
+                    call.terminal_support_count,
+                    call.spatial_damage_suspect,
                 ])
