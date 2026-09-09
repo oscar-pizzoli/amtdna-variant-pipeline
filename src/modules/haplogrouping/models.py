@@ -210,6 +210,9 @@ class HaplogroupResult:
     vcf_details: Optional[RawHaplogrepResult] = None
 
 
+# Compatibility alias to avoid contract drift
+HaplogrepResult = HaplogroupResult
+
 @dataclass(frozen=True)
 class ValidationResult:
     """Comprehensive biological and structural validation verdict."""

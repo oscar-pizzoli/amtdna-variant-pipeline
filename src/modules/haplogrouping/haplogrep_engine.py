@@ -137,7 +137,7 @@ class HaplogrepEngine:
         data: Any,
         sample_id: str,
         input_type: str,
-        raw_path: Optional[str],
+        raw_path: Optional[str] = None,
     ) -> RawHaplogrepResult:
         records = data if isinstance(data, list) else data.get("samples", [data])
         if not records or not isinstance(records, list):
@@ -222,7 +222,7 @@ class HaplogrepEngine:
             tree_id=self.config.tree_id,
             tree_version=self.config.tree_version,
             metric=self.config.metric,
-            raw_output_path=persisted_raw_path,
+            raw_output_path=raw_path,
         )
 
     def _validate_quality_score(self, raw_value: Any, sample_id: str) -> float:

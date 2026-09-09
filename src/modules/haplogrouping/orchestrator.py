@@ -3,11 +3,13 @@ Block 7 Haplogroup Orchestrator: End-to-end pipeline coordinator executing seque
 validation, dual-stream HaploGrep3 classification, multi-block audit checks, and contract emission.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.modules.alignment.models import ReferenceInfo
 from src.modules.haplogrouping.cross_block_auditor import CrossBlockAuditor
@@ -31,6 +33,7 @@ from src.modules.haplogrouping.models import (
     HaplogrepHit,
     HaplogrepResult,
     HaplogrepRunConfig,
+    HaplogroupResult,
     RawHaplogrepResult,
     SequenceIntegrityMetrics,
     ValidationResult,
@@ -102,7 +105,7 @@ class HaplogroupOrchestrator:
 
         expected_length = reference_info.length_bp if reference_info else 16569
 
-        # Stream reference sequence using SequenceValidator without redundant IO methods
+        # Stream reference sequence using SequenceValidator
         ref_seq: Optional[str] = None
         target_ref_path = reference_fasta or (
             Path(self.ref_cfg["fasta_path"]) if self.ref_cfg.get("fasta_path") else None
@@ -178,7 +181,7 @@ class HaplogroupOrchestrator:
                 start_time=start_time,
             )
 
-        # Phantom Normalization Resolution: pass clean uppercase FASTA to tool
+        # Phantom Normalization: pass clean uppercase FASTA to HaploGrep3
         input_fasta_for_engine = consensus_fasta
         if integrity_metrics.normalization_applied:
             normalized_fasta = sample_output_dir / f"{sample_id}.consensus.normalized.fasta"
@@ -280,8 +283,6 @@ class HaplogroupOrchestrator:
         )
 
         execution_seconds = round(time.time() - start_time, 2)
-
-        # Context-Preserving Flags Serialization
         serialized_flags = [f.to_dict() for f in all_flags]
 
         contract = Block7Contract(
@@ -317,7 +318,6 @@ class HaplogroupOrchestrator:
 
     @staticmethod
     def _load_mandatory_contract(path: Optional[Path], name: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        """Safely load JSON contract, enforcing existence for mandatory upstream dependencies."""
         if path is None or not path.is_file():
             return None, f"Mandatory contract '{name}' does not exist on disk: {path}"
         try:
