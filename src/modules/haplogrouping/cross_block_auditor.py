@@ -1,6 +1,7 @@
 """
 Block 7 Cross-Block Auditor: Multi-block consistency integration, topological
 phylotree graph traversal, reference-aware mutation parsing, and spatial damage triage.
+Extended with dynamic genomic boundaries and terminal insertion soft-clip detection.
 """
 
 import logging
@@ -27,20 +28,17 @@ logger = logging.getLogger("mtDNA_Pipeline.CrossBlockAuditor")
 
 @dataclass(frozen=True)
 class ParsedMutation:
-    """Structured decomposition of a mitochondrial variant."""
+    """Structured decomposition of a mitochondrial variant retaining back-mutation state."""
     raw: str
     variant_type: str  # "SNV", "INS", "DEL", "UNKNOWN"
     position: int
     ref_base: str
     alt_base: str
+    is_back_mutation: bool = False
 
 
 class PhylotreeGraph:
-    """
-    Topological and phylogenetic clade resolution engine.
-    Traverses true ancestral paths and resolves macro-haplogroup aliases
-    without string-prefix fallacies.
-    """
+    """Topological and phylogenetic clade resolution engine."""
 
     KNOWN_MACRO_PARENTS: Dict[str, str] = {
         "H": "HV",
@@ -198,7 +196,6 @@ class CrossBlockAuditor:
         b6_data: Dict[str, Any],
         position: int,
     ) -> Optional[Dict[str, Any]]:
-        """Defensively retrieve site detail from Block 6 contract using stringified position lookup."""
         details = b6_data.get("heteroplasmy_details")
         if not isinstance(details, dict):
             return None
@@ -219,7 +216,6 @@ class CrossBlockAuditor:
     ) -> CrossBlockAuditResult:
         flags: List[AuditFlag] = []
 
-        # 0. Strict Upstream Contract Verification
         if not block4_contract:
             flags.append(
                 AuditFlag(
@@ -243,7 +239,6 @@ class CrossBlockAuditor:
         b5_data = block5_contract or {}
         b6_data = block6_contract or {}
 
-        # 1. Quality Score & Ambiguity Auditing
         if fasta_result.quality_score < self.min_quality_score:
             flags.append(
                 AuditFlag(
@@ -265,7 +260,6 @@ class CrossBlockAuditor:
                 )
             )
 
-        # 2. Mutation Counts
         missing_count = len(fasta_result.missing_mutations)
         if missing_count > self.max_missing_diagnostic_mutations:
             flags.append(
@@ -296,7 +290,6 @@ class CrossBlockAuditor:
                 )
             )
 
-        # 3. Upstream Contamination Contract Verification
         raw_contam = b5_data.get("contamination_fraction")
         contam_frac: Optional[float] = None
         if raw_contam is None:
@@ -332,7 +325,6 @@ class CrossBlockAuditor:
                 )
             )
 
-        # 4. Topological Dual-Stream Concordance with Spatial Triage
         concordant, resolved_hg, subclade_detected, subclade_supported = (
             self._evaluate_dual_stream_concordance(
                 sample_id=sample_id,
@@ -346,7 +338,6 @@ class CrossBlockAuditor:
             )
         )
 
-        # 5. Topological Contaminant Affinity
         affinity, contam_hgs = self._evaluate_contaminant_affinity(
             endogenous_hg=fasta_result.haplogroup,
             b5_data=b5_data,
@@ -381,7 +372,6 @@ class CrossBlockAuditor:
                     )
                 )
 
-        # 6. Reference-Aware Chemical Screening of Private Mutations
         private_assessments = self._audit_private_mutations_chemistry(
             private_mutations=fasta_result.private_mutations,
             b4_data=b4_data,
@@ -457,7 +447,6 @@ class CrossBlockAuditor:
         if f_hg == v_hg:
             return True, orig_f_hg, False, None
 
-        # Scenario A: VCF topologically descends from FASTA
         if PhylotreeGraph.is_descendant(candidate_child=v_hg, candidate_parent=f_hg):
             subclade_detected = True
             flags.append(
@@ -483,12 +472,10 @@ class CrossBlockAuditor:
             matching_sites = diff_positions.intersection(b6_pass_sites)
             auth_status = str(b4_data.get("authentication_status") or "").upper()
 
-            # Fail-safe: None means maximum risk
             is_elevated_contam = (
                 contam_fraction is None or contam_fraction >= self.subclade_contam_max_fraction
             )
 
-            # Evaluate differentiating mutations using Block 6 spatial damage authentication
             damage_transitions: List[str] = []
             solid_variants: List[str] = []
             spatial_verified_transitions: List[str] = []
@@ -510,24 +497,18 @@ class CrossBlockAuditor:
                         solid_variants.append(mut)
                         continue
 
-                    # Potential deamination transition on authentic ancient background:
-                    # Query Block 6 spatial geometry contract
                     site_detail = self._get_site_heteroplasmy_detail(b6_data, parsed.position)
 
                     if site_detail is not None:
                         is_suspect = site_detail.get("spatial_damage_suspect")
                         if is_suspect is False:
-                            # Block 6 verified sufficient physical internal fragment support
                             solid_variants.append(mut)
                             spatial_verified_transitions.append(mut)
                         else:
-                            # Confirmed spatial damage suspect (e.g. exclusively terminal)
                             damage_transitions.append(mut)
                     else:
-                        # Legacy contract or site detail missing without spatial proof
                         damage_transitions.append(mut)
 
-            # If contamination is elevated, reject shift outright
             if is_elevated_contam:
                 flags.append(
                     AuditFlag(
@@ -546,7 +527,6 @@ class CrossBlockAuditor:
                 )
                 return True, orig_f_hg, subclade_detected, False
 
-            # Proportional Refinement: Approved if supported by solid variants or spatial verification
             if solid_variants:
                 if damage_transitions:
                     flags.append(
@@ -580,7 +560,6 @@ class CrossBlockAuditor:
                 )
                 return True, orig_v_hg, subclade_detected, True
 
-            # Purely driven by unverified deamination transitions: reject shift
             if damage_transitions and not solid_variants:
                 flags.append(
                     AuditFlag(
@@ -602,7 +581,6 @@ class CrossBlockAuditor:
 
             return True, orig_f_hg, subclade_detected, False
 
-        # Scenario B: FASTA is topologically deeper than VCF
         if PhylotreeGraph.is_descendant(candidate_child=f_hg, candidate_parent=v_hg):
             flags.append(
                 AuditFlag(
@@ -614,7 +592,6 @@ class CrossBlockAuditor:
             )
             return True, orig_f_hg, False, None
 
-        # Scenario C: Incompatible divergent clades
         flags.append(
             AuditFlag(
                 code=AuditCode.HAPLOGROUP_INPUT_DISCORDANCE,
@@ -677,14 +654,23 @@ class CrossBlockAuditor:
         reference_sequence: Optional[str],
     ) -> Optional[ParsedMutation]:
         clean = mut_str.strip().upper()
+        is_back = clean.endswith("!")
+        unflagged = clean.rstrip("!")
 
-        ins_match = self.INS_REGEX.match(clean)
+        ins_match = self.INS_REGEX.match(unflagged)
         if ins_match:
             pos = int(ins_match.group(1))
             alt_b = ins_match.group(3).upper()
-            return ParsedMutation(raw=clean, variant_type="INS", position=pos, ref_base=".", alt_base=alt_b)
+            return ParsedMutation(
+                raw=clean,
+                variant_type="INS",
+                position=pos,
+                ref_base=".",
+                alt_base=alt_b,
+                is_back_mutation=is_back,
+            )
 
-        del_match = self.DEL_REGEX.match(clean)
+        del_match = self.DEL_REGEX.match(unflagged)
         if del_match:
             pos = int(del_match.group(2))
             raw_ref = (del_match.group(1) or "").lstrip(">").upper()
@@ -692,9 +678,16 @@ class CrossBlockAuditor:
             if ref_b == "N" and reference_sequence is not None:
                 if 1 <= pos <= len(reference_sequence):
                     ref_b = reference_sequence[pos - 1].upper()
-            return ParsedMutation(raw=clean, variant_type="DEL", position=pos, ref_base=ref_b, alt_base="DEL")
+            return ParsedMutation(
+                raw=clean,
+                variant_type="DEL",
+                position=pos,
+                ref_base=ref_b,
+                alt_base="DEL",
+                is_back_mutation=is_back,
+            )
 
-        snv_match = self.SNV_REGEX.match(clean)
+        snv_match = self.SNV_REGEX.match(unflagged)
         if snv_match:
             pos = int(snv_match.group(2))
             raw_ref = (snv_match.group(1) or "").lstrip(">").upper()
@@ -703,9 +696,23 @@ class CrossBlockAuditor:
             if ref_b == "N" and reference_sequence is not None:
                 if 1 <= pos <= len(reference_sequence):
                     ref_b = reference_sequence[pos - 1].upper()
-            return ParsedMutation(raw=clean, variant_type="SNV", position=pos, ref_base=ref_b, alt_base=alt_b)
+            return ParsedMutation(
+                raw=clean,
+                variant_type="SNV",
+                position=pos,
+                ref_base=ref_b,
+                alt_base=alt_b,
+                is_back_mutation=is_back,
+            )
 
-        return ParsedMutation(raw=clean, variant_type="UNKNOWN", position=0, ref_base="N", alt_base="N")
+        return ParsedMutation(
+            raw=clean,
+            variant_type="UNKNOWN",
+            position=0,
+            ref_base="N",
+            alt_base="N",
+            is_back_mutation=is_back,
+        )
 
     def _audit_private_mutations_chemistry(
         self,
@@ -717,6 +724,8 @@ class CrossBlockAuditor:
         auth_status = str(b4_data.get("authentication_status") or "").upper()
         is_authentic_ancient = (auth_status == "AUTHENTIC_ANCIENT_SUPPORTED")
         assessments: List[PrivateMutationAssessment] = []
+
+        ref_len = len(reference_sequence) if reference_sequence else 16569
 
         for mut_str in private_mutations:
             clean_mut = mut_str.strip().upper()
@@ -736,22 +745,31 @@ class CrossBlockAuditor:
                 )
                 continue
 
+            # Dynamic terminal distance computation across circular boundaries
+            is_terminal_region = (parsed.position <= 500) or (parsed.position >= (ref_len - 500))
+
             if parsed.variant_type == "INS":
+                if is_authentic_ancient and is_terminal_region:
+                    cls = PrivateMutationDamageClass.INDEL_SOFT_CLIP_SUSPECT
+                    rationale = "Terminal insertion in authentic ancient sample; suspect mapping, adapter ligation, or soft-clipping artifact."
+                else:
+                    cls = PrivateMutationDamageClass.UNASSESSED
+                    rationale = "Internal insertion variant; indels bypass point substitution deamination triage."
+
                 assessments.append(
                     PrivateMutationAssessment(
                         mutation=clean_mut,
                         position=parsed.position,
                         ref_base=parsed.ref_base,
                         alt_base=parsed.alt_base,
-                        classification=PrivateMutationDamageClass.UNASSESSED,
+                        classification=cls,
                         evidence_source="BLOCK4_CHEMISTRY_SCREEN",
-                        rationale="Insertion variant; indels bypass point substitution deamination triage.",
+                        rationale=rationale,
                     )
                 )
                 continue
 
             if parsed.variant_type == "DEL":
-                is_terminal_region = (parsed.position <= 500) or (parsed.position >= 16000)
                 if is_authentic_ancient and is_terminal_region:
                     cls = PrivateMutationDamageClass.INDEL_SOFT_CLIP_SUSPECT
                     rationale = "Terminal deletion in authentic ancient sample; suspect mapping or soft-clipping artifact."

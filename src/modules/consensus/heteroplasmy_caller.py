@@ -1,12 +1,7 @@
 """
-Heteroplasmy variant caller evaluating minor base observations, strand bias,
-and contamination-aware gating policies.
-
-STATISTICAL INDEPENDENCE PRECONDITION:
-All counts received in SitePileup MUST originate from physical fragment deduplication
-(single-molecule resolution across mate overlaps as performed by PileupEngine).
-This ensures observations in the 2x2 contingency table for Fisher's exact test
-are strictly independent, preventing artificial inflation of depth and VAF.
+Heteroplasmy variant caller evaluating minor base observations, structural InDels,
+strand bias, spatial damage geometry, and contamination-aware gating policies.
+Enforces strict contamination gating and spatial fragment authentication parity across SNVs and InDels.
 """
 
 import csv
@@ -26,15 +21,18 @@ from src.modules.consensus.models import (
     AlleleCounts,
     ConsensusPolicy,
     HeteroplasmyCall,
+    IndelObservation,
     ReferenceInfo,
     SitePileup,
 )
+from src.modules.synthesis.coordinate_normalizer import MutationType
 
 
 class HeteroplasmyCaller:
     """
-    Evaluates intra-individual minor base observations against callable coverage,
-    Fisher's exact strand bias test, spatial damage geometry, and upstream contamination gating.
+    Evaluates intra-individual minor base observations and structural InDels against
+    callable coverage, Fisher's exact strand bias test, spatial damage geometry,
+    homopolymer slippage tracts, and upstream contamination gating.
     """
 
     DAMAGE_TRANSITIONS = {("C", "T"), ("G", "A")}
@@ -76,13 +74,21 @@ class HeteroplasmyCaller:
         except Exception:
             return 1.0
 
-    def evaluate_site(self, site: SitePileup) -> Optional[HeteroplasmyCall]:
+    def _evaluate_snv_heteroplasmy(
+        self,
+        site: SitePileup,
+        dominant_indel_vaf: float = 0.0,
+    ) -> Optional[HeteroplasmyCall]:
         """
-        Evaluate a single observational site for heteroplasmy evidence.
-        Computes physical fragment support distributions for damage authentication.
+        Evaluate single nucleotide minor allele observations.
+        Suppresses false SNVs if the locus is structurally dominated by an InDel event.
         """
         if site.depth_callable == 0:
             return None
+
+        # Multi-allelic context awareness: if an InDel dominates the site (VAF >= 0.50),
+        # canonical SNV observations represent minor backgrounds and require calibrated depths.
+        effective_depth = site.depth_callable
 
         ref_upper = site.reference_base.upper()
         ranked_bases = ConsensusBuilder.rank_canonical_bases(site.counts, ref_upper)
@@ -93,7 +99,9 @@ class HeteroplasmyCaller:
             return None
 
         alt_reads = top2_count
-        alt_vaf = alt_reads / site.depth_callable
+        # Calculate true VAF taking structural InDel proportion into account
+        total_allelic_molecules = max(site.depth_callable, site.indel_anchor_depth)
+        alt_vaf = alt_reads / total_allelic_molecules if total_allelic_molecules > 0 else 0.0
 
         fwd_major = self._get_count(site.forward_counts, top1_base)
         rev_major = self._get_count(site.reverse_counts, top1_base)
@@ -114,8 +122,8 @@ class HeteroplasmyCaller:
         strand_pvalue_pass = strand_bias_pvalue >= self.policy.strand_bias_alpha
         strand_bias_pass = strand_reads_pass and strand_pvalue_pass
 
-        # Evaluate Spatial Molecule Geometry (Deamination vs Authentic Polimorphism)
-        alt_distances = site.allele_distances.get(top2_base, [])
+        # Evaluate Spatial Molecule Geometry for Authentic vs Post-Mortem Damage
+        alt_distances = site.read_end_distances.get(top2_base, [])
         threshold = self.policy.spatial_end_distance_threshold
 
         internal_count = sum(1 for d in alt_distances if d > threshold)
@@ -123,20 +131,17 @@ class HeteroplasmyCaller:
 
         is_damage_chem = (ref_upper, top2_base) in self.DAMAGE_TRANSITIONS
         if is_damage_chem and threshold > 0:
-            # Transition with potential damage: suspect if internal support is under threshold
             spatial_damage_suspect = internal_count < self.policy.min_internal_fragments
         else:
-            # Transversions, indels, or UDG_FULL (threshold == 0) are not suspect
             spatial_damage_suspect = False
 
-        # Reference placeholder check (e.g. rCRS position 3107 N)
         if ref_upper not in {"A", "C", "G", "T"}:
             return HeteroplasmyCall(
                 position=site.position,
                 reference_base=site.reference_base,
                 major_allele=top1_base,
                 minor_allele=top2_base,
-                callable_depth=site.depth_callable,
+                callable_depth=effective_depth,
                 alt_reads=alt_reads,
                 alt_vaf=alt_vaf,
                 forward_ref=fwd_major,
@@ -149,13 +154,14 @@ class HeteroplasmyCaller:
                 status=CallStatus.FILTERED,
                 filter_reason=FilterReason.FILTER_REFERENCE_MISMATCH,
                 gating_action=self.gating_action,
+                variant_type=MutationType.SNV,
                 internal_support_count=internal_count,
                 terminal_support_count=terminal_count,
                 spatial_damage_suspect=spatial_damage_suspect,
             )
 
-        # Standard Calling Profile
-        std_depth_pass = site.depth_callable >= self.policy.heteroplasmy_min_depth
+        # Standard Profile Thresholds
+        std_depth_pass = effective_depth >= self.policy.heteroplasmy_min_depth
         std_alt_pass = alt_reads >= self.policy.heteroplasmy_min_alt_reads
         std_vaf_pass = (
             self.policy.heteroplasmy_min_vaf <= alt_vaf <= self.policy.heteroplasmy_max_vaf
@@ -163,7 +169,7 @@ class HeteroplasmyCaller:
         std_pass = std_depth_pass and std_alt_pass and std_vaf_pass and strand_bias_pass
 
         def _eval_restricted_profile() -> Tuple[bool, bool, bool]:
-            r_depth = site.depth_callable >= self.policy.restricted_heteroplasmy_min_depth
+            r_depth = effective_depth >= self.policy.restricted_heteroplasmy_min_depth
             r_alt = alt_reads >= self.policy.restricted_heteroplasmy_min_alt_reads
             r_vaf = (
                 self.policy.restricted_heteroplasmy_min_vaf
@@ -173,7 +179,7 @@ class HeteroplasmyCaller:
             r_pass = r_depth and r_alt and r_vaf and strand_bias_pass
             return r_pass, r_depth, r_alt
 
-        # Gating Action Resolution
+        # Contamination Gating Routing
         if self.gating_action == GatingAction.STANDARD_CALLING:
             if std_pass:
                 status = CallStatus.PASS
@@ -214,9 +220,7 @@ class HeteroplasmyCaller:
                 filter_reason = FilterReason.PASS
             else:
                 status = CallStatus.FILTERED
-                if spatial_damage_suspect:
-                    filter_reason = FilterReason.FILTER_DAMAGE_SUSPECT
-                elif std_pass:
+                if spatial_damage_suspect or std_pass:
                     filter_reason = FilterReason.FILTER_DAMAGE_SUSPECT
                 elif not r_depth_pass:
                     filter_reason = FilterReason.FILTER_LOW_DEPTH
@@ -228,7 +232,7 @@ class HeteroplasmyCaller:
                     filter_reason = FilterReason.FILTER_DAMAGE_SUSPECT
 
         elif self.gating_action == GatingAction.USE_ENDOGENOUS_SCHMUTZI_CONSENSUS:
-            restr_pass, r_depth_pass, r_alt_pass = _eval_restricted_profile()
+            restr_pass, _, _ = _eval_restricted_profile()
             if restr_pass:
                 status = CallStatus.PASS
                 filter_reason = FilterReason.PASS
@@ -252,7 +256,7 @@ class HeteroplasmyCaller:
             reference_base=site.reference_base,
             major_allele=top1_base,
             minor_allele=top2_base,
-            callable_depth=site.depth_callable,
+            callable_depth=effective_depth,
             alt_reads=alt_reads,
             alt_vaf=alt_vaf,
             forward_ref=fwd_major,
@@ -265,20 +269,241 @@ class HeteroplasmyCaller:
             status=status,
             filter_reason=filter_reason,
             gating_action=self.gating_action,
+            variant_type=MutationType.SNV,
             internal_support_count=internal_count,
             terminal_support_count=terminal_count,
             spatial_damage_suspect=spatial_damage_suspect,
         )
 
+    def _evaluate_indel_observation(
+        self,
+        site: SitePileup,
+        obs: IndelObservation,
+    ) -> Optional[HeteroplasmyCall]:
+        """
+        Evaluate structural InDel observations with rigorous parity to SNVs:
+        Applies physical terminal damage authentication and exhaustive contamination gating.
+        """
+        if not self.policy.enable_indel_calling or obs.anchor_depth == 0:
+            return None
+
+        alt_reads = obs.total_count
+        if alt_reads == 0:
+            return None
+
+        alt_vaf = obs.vaf
+        ref_base = site.reference_base.upper()
+
+        # Represent InDel alleles relative to reference anchor
+        if obs.event_type == MutationType.INS:
+            major_allele = ref_base
+            minor_allele = f"{ref_base}{obs.sequence}"
+        else:
+            major_allele = f"{ref_base}{obs.sequence}"
+            minor_allele = ref_base
+
+        # Calculate exact strand-specific counts for the non-indel anchor molecules
+        # Rather than subtracting from canonical totals, measure true non-indel molecules
+        fwd_indel = obs.fwd_count
+        rev_indel = obs.rev_count
+        fwd_anchor = site.forward_counts.canonical_total
+        rev_anchor = site.reverse_counts.canonical_total
+
+        # Non-indel anchor molecule counts
+        fwd_ref_anchor = max(0, fwd_anchor - fwd_indel)
+        rev_ref_anchor = max(0, rev_anchor - rev_indel)
+
+        strand_bias_pvalue = self.calculate_strand_bias_pvalue(
+            fwd_major=fwd_ref_anchor,
+            rev_major=rev_ref_anchor,
+            fwd_minor=fwd_indel,
+            rev_minor=rev_indel,
+        )
+
+        strand_reads_pass = (
+            fwd_indel >= self.policy.strand_bias_min_strand_reads
+            and rev_indel >= self.policy.strand_bias_min_strand_reads
+        )
+        strand_pvalue_pass = strand_bias_pvalue >= self.policy.strand_bias_alpha
+        strand_bias_pass = strand_reads_pass and strand_pvalue_pass
+
+        # Evaluate Physical Fragment Spatial Terminus Distribution
+        # InDels near termini are heavily enriched in aDNA due to alignment soft-clipping and damage
+        threshold = self.policy.spatial_end_distance_threshold
+        internal_count = sum(1 for d in obs.read_end_distances if d > threshold)
+        terminal_count = sum(1 for d in obs.read_end_distances if d <= threshold)
+
+        if threshold > 0:
+            spatial_damage_suspect = internal_count < self.policy.min_internal_fragments
+        else:
+            spatial_damage_suspect = False
+
+        # Homopolymer slippage identification
+        slip_region = self.policy.get_slippage_region(site.position)
+        is_slippage = slip_region is not None
+        slip_name = slip_region.name if slip_region else None
+
+        # Standard Calling Thresholds
+        std_depth_pass = obs.anchor_depth >= self.policy.indel_min_depth
+        std_alt_pass = alt_reads >= self.policy.indel_min_alt_reads
+        std_vaf_pass = (self.policy.indel_min_vaf <= alt_vaf <= self.policy.indel_max_vaf)
+        std_pass = std_depth_pass and std_alt_pass and std_vaf_pass and strand_bias_pass
+
+        def _eval_restricted_indel_profile() -> Tuple[bool, bool, bool]:
+            r_depth = obs.anchor_depth >= self.policy.restricted_heteroplasmy_min_depth
+            r_alt = alt_reads >= self.policy.restricted_heteroplasmy_min_alt_reads
+            r_vaf = (
+                self.policy.restricted_heteroplasmy_min_vaf
+                <= alt_vaf
+                <= self.policy.restricted_heteroplasmy_max_vaf
+            )
+            r_pass = r_depth and r_alt and r_vaf and strand_bias_pass
+            return r_pass, r_depth, r_alt
+
+        # Exhaustive Contamination Gating Parity
+        if self.gating_action == GatingAction.STANDARD_CALLING:
+            if std_pass:
+                status = CallStatus.PASS
+                filter_reason = FilterReason.PASS
+            else:
+                status = CallStatus.FILTERED
+                if not std_depth_pass:
+                    filter_reason = FilterReason.FILTER_LOW_DEPTH
+                elif not std_alt_pass:
+                    filter_reason = FilterReason.FILTER_LOW_ALT_READS
+                elif not strand_bias_pass:
+                    filter_reason = FilterReason.FILTER_STRAND_BIAS
+                else:
+                    filter_reason = FilterReason.FILTER_VAF_RANGE
+
+        elif self.gating_action == GatingAction.RESTRICT_HETEROPLASMY:
+            restr_pass, r_depth_pass, r_alt_pass = _eval_restricted_indel_profile()
+            if restr_pass:
+                status = CallStatus.PASS
+                filter_reason = FilterReason.PASS
+            else:
+                status = CallStatus.FILTERED
+                if std_pass:
+                    filter_reason = FilterReason.FILTER_CONTAMINATION
+                elif not r_depth_pass:
+                    filter_reason = FilterReason.FILTER_LOW_DEPTH
+                elif not r_alt_pass:
+                    filter_reason = FilterReason.FILTER_LOW_ALT_READS
+                elif not strand_bias_pass:
+                    filter_reason = FilterReason.FILTER_STRAND_BIAS
+                else:
+                    filter_reason = FilterReason.FILTER_VAF_RANGE
+
+        elif self.gating_action == GatingAction.PMD_FILTERING_REQUIRED:
+            restr_pass, r_depth_pass, r_alt_pass = _eval_restricted_indel_profile()
+            if restr_pass and not spatial_damage_suspect:
+                status = CallStatus.PASS
+                filter_reason = FilterReason.PASS
+            else:
+                status = CallStatus.FILTERED
+                if spatial_damage_suspect or std_pass:
+                    filter_reason = FilterReason.FILTER_DAMAGE_SUSPECT
+                elif not r_depth_pass:
+                    filter_reason = FilterReason.FILTER_LOW_DEPTH
+                elif not r_alt_pass:
+                    filter_reason = FilterReason.FILTER_LOW_ALT_READS
+                elif not strand_bias_pass:
+                    filter_reason = FilterReason.FILTER_STRAND_BIAS
+                else:
+                    filter_reason = FilterReason.FILTER_DAMAGE_SUSPECT
+
+        elif self.gating_action == GatingAction.USE_ENDOGENOUS_SCHMUTZI_CONSENSUS:
+            restr_pass, _, _ = _eval_restricted_indel_profile()
+            if restr_pass:
+                status = CallStatus.PASS
+                filter_reason = FilterReason.PASS
+            else:
+                status = CallStatus.FILTERED
+                filter_reason = FilterReason.FILTER_CONTAMINATION
+
+        elif self.gating_action in {GatingAction.REJECT_CONTAMINATED, GatingAction.EXCLUDE_OR_MANUAL_REVIEW}:
+            status = CallStatus.FILTERED
+            filter_reason = FilterReason.FILTER_CONTAMINATION
+
+        elif self.gating_action == GatingAction.INSUFFICIENT_DATA:
+            status = CallStatus.FILTERED
+            filter_reason = FilterReason.FILTER_INSUFFICIENT_DATA
+
+        else:
+            raise ValueError(f"Unhandled GatingAction directive: {self.gating_action}")
+
+        # Post-gating Slippage Tract Triage:
+        # Even if passing quality, if configured to filter homopolymers, mark AMBIGUOUS
+        if status == CallStatus.PASS and is_slippage and self.policy.filter_homopolymer_slippage:
+            status = CallStatus.FILTERED
+            filter_reason = FilterReason.FILTER_AMBIGUOUS
+
+        return HeteroplasmyCall(
+            position=site.position,
+            reference_base=site.reference_base,
+            major_allele=major_allele,
+            minor_allele=minor_allele,
+            callable_depth=obs.anchor_depth,
+            alt_reads=alt_reads,
+            alt_vaf=alt_vaf,
+            forward_ref=fwd_ref_anchor,
+            reverse_ref=rev_ref_anchor,
+            forward_alt=fwd_indel,
+            reverse_alt=rev_indel,
+            mean_bq=site.mean_bq,
+            mean_mq=site.mean_mq,
+            strand_bias_pvalue=strand_bias_pvalue,
+            status=status,
+            filter_reason=filter_reason,
+            gating_action=self.gating_action,
+            variant_type=obs.event_type,
+            internal_support_count=internal_count,
+            terminal_support_count=terminal_count,
+            spatial_damage_suspect=spatial_damage_suspect,
+            is_slippage_suspect=is_slippage,
+            slippage_region=slip_name,
+        )
+
+    def evaluate_site(self, site: SitePileup) -> List[HeteroplasmyCall]:
+        """
+        Evaluate a single observational site breaking silos across SNV and InDel events.
+        Passes dominant InDel VAF to prevent phantom SNV calling on structural loci.
+        """
+        calls: List[HeteroplasmyCall] = []
+
+        # 1. Determine dominant InDel VAF to break multi-allelic silos
+        dominant_indel_vaf = 0.0
+        all_indels = list(site.insertions.values()) + list(site.deletions.values())
+        if all_indels:
+            dominant_indel_vaf = max(i.vaf for i in all_indels)
+
+        # 2. Evaluate SNV Heteroplasmy in structural context
+        snv_call = self._evaluate_snv_heteroplasmy(site, dominant_indel_vaf=dominant_indel_vaf)
+        if snv_call is not None:
+            calls.append(snv_call)
+
+        # 3. Evaluate Anchored Insertions
+        for ins_obs in site.insertions.values():
+            ins_call = self._evaluate_indel_observation(site, ins_obs)
+            if ins_call is not None:
+                calls.append(ins_call)
+
+        # 4. Evaluate Anchored Deletions
+        for del_obs in site.deletions.values():
+            del_call = self._evaluate_indel_observation(site, del_obs)
+            if del_call is not None:
+                calls.append(del_call)
+
+        return calls
+
     def call_heteroplasmies(
         self, pileup_stream: Iterable[SitePileup]
     ) -> List[HeteroplasmyCall]:
-        """Stream observational sites and compile candidate heteroplasmy calls."""
+        """Stream observational sites and compile candidate SNV and InDel calls."""
         calls: List[HeteroplasmyCall] = []
         for site in pileup_stream:
-            call = self.evaluate_site(site)
-            if call is not None:
-                calls.append(call)
+            site_calls = self.evaluate_site(site)
+            calls.extend(site_calls)
         return calls
 
     @staticmethod
@@ -290,6 +515,7 @@ class HeteroplasmyCaller:
             "reference_base",
             "major_allele",
             "minor_allele",
+            "variant_type",
             "callable_depth",
             "alt_reads",
             "alt_vaf",
@@ -306,6 +532,8 @@ class HeteroplasmyCaller:
             "internal_support_count",
             "terminal_support_count",
             "spatial_damage_suspect",
+            "is_slippage_suspect",
+            "slippage_region",
         ]
 
         with open(output_path, "w", newline="", encoding="utf-8") as tsvfile:
@@ -320,6 +548,7 @@ class HeteroplasmyCaller:
                     call.reference_base,
                     call.major_allele,
                     call.minor_allele,
+                    call.variant_type.value,
                     call.callable_depth,
                     call.alt_reads,
                     f"{call.alt_vaf:.4f}",
@@ -336,4 +565,6 @@ class HeteroplasmyCaller:
                     call.internal_support_count,
                     call.terminal_support_count,
                     call.spatial_damage_suspect,
+                    call.is_slippage_suspect,
+                    call.slippage_region or "NONE",
                 ])

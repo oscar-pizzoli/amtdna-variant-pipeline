@@ -1,7 +1,7 @@
 """
 Block 7 HaploGrep3 Execution Engine: CLI wrapper handling binary inspection,
 versioned phylogeny parameterization, quality margin resolution, and strict metric bounding.
-Supports native HaploGrep3 TSV output as well as legacy JSON payloads.
+Supports native HaploGrep3 TSV output as well as legacy JSON payloads while preserving back-mutation markers (!).
 """
 
 import csv
@@ -147,14 +147,14 @@ class HaplogrepEngine:
 
     @staticmethod
     def _clean_tsv_polys(raw_str: Any) -> List[str]:
-        """Strip annotations like (globalPrivateMutation) and trailing exclamation marks."""
+        """Strip metadata annotations like (globalPrivateMutation) while preserving back-mutation exclamation marks (!)."""
         if not raw_str or not isinstance(raw_str, str):
             return []
         cleaned_str = re.sub(r"\s*\([^)]*\)", "", raw_str)
         tokens = cleaned_str.strip().split()
         cleaned: List[str] = []
         for t in tokens:
-            item = t.strip().rstrip("!")
+            item = t.strip()
             if item:
                 cleaned.append(item)
         return cleaned
@@ -166,7 +166,7 @@ class HaplogrepEngine:
         input_type: str,
         raw_path: Optional[str] = None,
     ) -> RawHaplogrepResult:
-        """Parse native TSV output produced by HaploGrep3."""
+        """Parse native TSV output produced by HaploGrep3 preserving phylogenetic notation."""
         reader = csv.DictReader(io.StringIO(tsv_content), delimiter="\t")
         all_rows = list(reader)
 
@@ -232,7 +232,7 @@ class HaplogrepEngine:
         missing_muts = self._clean_tsv_polys(best_row.get("Not_Found_Polys", ""))
         all_private = self._clean_tsv_polys(best_row.get("Remaining_Polys", ""))
 
-        private_muts = [m for m in all_private if not m.upper().endswith("N")]
+        private_muts = [m for m in all_private if not m.rstrip("!").upper().endswith("N")]
         expected_muts = sorted(set(found_muts + missing_muts))
 
         return RawHaplogrepResult(
@@ -263,7 +263,7 @@ class HaplogrepEngine:
         input_type: str,
         raw_path: Optional[str] = None,
     ) -> RawHaplogrepResult:
-        """Backward-compatible parser for JSON payloads."""
+        """Backward-compatible parser for JSON payloads preserving back-mutation markers."""
         records = data if isinstance(data, list) else data.get("samples", [data])
         if not records or not isinstance(records, list):
             raise HaplogrepExecutionError(f"No sample records found in HaploGrep3 payload for '{sample_id}'.")
@@ -375,13 +375,13 @@ class HaplogrepEngine:
 
         for item in mut_list:
             if isinstance(item, str):
-                s = item.strip().rstrip("!")
+                s = item.strip()
                 if s:
                     cleaned.append(s)
             elif isinstance(item, dict):
                 variant = item.get("mutation") or item.get("variant") or item.get("pos")
                 if variant:
-                    cleaned.append(str(variant).strip().rstrip("!"))
+                    cleaned.append(str(variant).strip())
                 else:
                     warnings.append(f"Unrecognized dict structure in '{field_name}': {item}")
             else:

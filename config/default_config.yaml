@@ -200,6 +200,7 @@ consensus:
   major_allele_fraction: 0.80
   ambiguity_min_vaf: 0.10
   emit_iupac_fasta: true
+  emit_subconsensus_vcf: true     # <-- Parametro introdotto per il doppio VCF (Operativo + Sub-consenso)
   mask_char: "N"
 
   heteroplasmy:
@@ -234,7 +235,7 @@ haplogroup:
   tool: "haplogrep3"
   tree_id: "phylotree-fu-rcrs"
   tree_version: "1.2"
-  metric: "KULCZYNSKI"                 # <-- ERA "kulczynski", METTERE IN MAIUSCOLO
+  metric: "KULCZYNSKI"
   min_quality_score: 0.80
   cross_check_vcf: true
   timeout_seconds: 300
