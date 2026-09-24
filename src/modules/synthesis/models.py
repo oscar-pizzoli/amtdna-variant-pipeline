@@ -1,6 +1,6 @@
 """
 Block 8 Models: Core dataclasses, formal schemas, multi-tier warning taxonomies,
-and serialization primitives for holistic sample synthesis and cohort packaging.
+and serialization primitives for holistic sample synthesis, sequencing QC, and cohort packaging.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -45,8 +45,12 @@ class MutationRole(str, Enum):
 class ProvenanceStatus(str, Enum):
     """Integrity and cryptographic verification state of a physical file."""
     VERIFIED = "VERIFIED"
+    UNANCHORED = "UNANCHORED"
     MISMATCH = "MISMATCH"
     FILE_MISSING = "FILE_MISSING"
+    IO_ERROR = "IO_ERROR"
+    SEMANTIC_ERROR = "SEMANTIC_ERROR"
+    GATED_OMITTED = "GATED_OMITTED"
     UNCHECKED = "UNCHECKED"
 
 
@@ -77,15 +81,30 @@ def format_na(value: Any, float_format: Optional[str] = None) -> str:
     return val_str if val_str and val_str.upper() not in {"NONE", "NULL", "NAN", "INF"} else "NA"
 
 
+def format_pct_100(value: Optional[float], decimals: int = 2) -> str:
+    """Format metrics already on a 0-100 scale (e.g. *_pct) with explicit percent sign."""
+    if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
+        return "NA"
+    return f"{value:.{decimals}f}%"
+
+
+def format_pct_fraction(value: Optional[float], decimals: int = 2) -> str:
+    """Format ratios and breadths on a 0.0-1.0 scale (e.g. *_fraction, *_rate) multiplying by 100."""
+    if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
+        return "NA"
+    return f"{value * 100.0:.{decimals}f}%"
+
+
 # ==============================================================================
 # CO-LOCATED MASTER TSV HEADERS
 # ==============================================================================
 
 SAMPLE_MASTER_TSV_HEADERS: List[str] = [
+    # 1. General Identifiers
     "sample_id",
     "overall_status",
     "biological_type",
-    # Block 7 (Phylogeny)
+    # 2. Block 7 (Phylogeny & Lineage)
     "primary_haplogroup",
     "resolved_haplogroup",
     "quality_score",
@@ -93,34 +112,52 @@ SAMPLE_MASTER_TSV_HEADERS: List[str] = [
     "haplogroup_status",
     "subclade_shift_detected",
     "subclade_shift_supported",
-    # Block 2 (Preprocessing)
+    # 3. Sequencing QC & Trimming (Block 2)
     "raw_reads_total",
-    "retained_reads_total",
+    "clean_reads_total",
     "retention_fraction",
     "collapsed_fraction",
-    # Block 3 (Alignment & Coverage)
+    "adapter_trimmed_reads_pct",
+    "q20_rate_post",
+    "q30_rate_post",
+    "gc_content_pct",
+    "mean_read_length_pre",
+    "mean_read_length_post",
+    # 4. Block 3 (Alignment & Whole-mt Coverage)
     "mapped_reads_mt",
     "endogenous_dna_fraction",
     "endogenous_dna_source",
     "mean_depth",
     "coverage_breadth_1x",
     "coverage_breadth_3x",
+    "coverage_breadth_5x",
     "duplication_rate",
-    # Block 4 (Authenticity & Degradation)
+    # 5. Mitochondrial Macro-Complexes Coverage (Block 6)
+    "cov_dloop_mean",
+    "cov_dloop_1x",
+    "cov_rrna_mean",
+    "cov_rrna_1x",
+    "cov_cox_mean",
+    "cov_cox_1x",
+    "cov_nd_mean",
+    "cov_nd_1x",
+    "cov_cyb_mean",
+    "cov_cyb_1x",
+    # 6. Block 4 (Authenticity & Degradation Kinetics)
     "median_fragment_length",
     "pmd_fraction_ge_3",
     "c_to_t_5p_rate_pos1",
     "g_to_a_3p_rate_pos1",
     "rescaling_performed",
-    # Block 5 (Contamination)
+    # 7. Block 5 (Contamination Assessment)
     "contamination_fraction",
     "contamination_ci_95",
     "estimation_confidence",
     "recommended_action",
-    # Block 6 (Consensus & Heteroplasmy)
+    # 8. Block 6 (Consensus & Heteroplasmy)
     "n_fraction_canonical",
     "heteroplasmy_sites_pass",
-    # Synthesis & Audit
+    # 9. Block 8 Synthesis & Audit
     "total_mutations_count",
     "total_warnings_count",
     "active_warning_codes",
@@ -204,6 +241,47 @@ class ProvenanceItem:
 
 
 @dataclass
+class SemanticVerificationItem:
+    """Detailed result of deep bioinformatic format and header inspection."""
+    artifact_name: str
+    file_path: str
+    format_type: str  # BAM, FASTA, VCF, TSV
+    is_valid: bool
+    details: Dict[str, Any] = field(default_factory=dict)
+    error_message: Optional[str] = None
+
+
+@dataclass
+class LineageVerificationItem:
+    """Pairwise cross-block contract provenance identity check."""
+    source_block: str
+    target_block: str
+    entity_name: str
+    source_hash: str
+    target_hash: str
+    is_consistent: bool
+    message: Optional[str] = None
+
+
+@dataclass
+class FinalVerificationReport:
+    """Holistic forensic report assessing chain-of-custody and data integrity."""
+    sample_id: str
+    run_id: str
+    overall_status: str  # PASS, WARN, FAIL
+    manifest_anchored: bool
+    contract_checks: List[ProvenanceItem] = field(default_factory=list)
+    artifact_checks: List[ProvenanceItem] = field(default_factory=list)
+    semantic_checks: List[SemanticVerificationItem] = field(default_factory=list)
+    lineage_checks: List[LineageVerificationItem] = field(default_factory=list)
+    critical_failures: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    verification_timestamp: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+
+@dataclass
 class MutationEntry:
     """Relational row for the tidy-format whole-cohort variant catalog."""
     sample_id: str
@@ -278,6 +356,23 @@ class PreprocessingSummary:
 
 
 @dataclass
+class SequencingQCSummary:
+    """Detailed sequencing quality and adapter trimming metrics (Block 2)."""
+    raw_reads_total: Optional[int] = None
+    clean_reads_total: Optional[int] = None
+    retention_fraction: Optional[float] = None
+    collapsed_fraction: Optional[float] = None
+    adapter_trimmed_reads_pct: Optional[float] = None  # Scale 0.0 - 100.0
+    q20_rate_post: Optional[float] = None              # Scale 0.0 - 1.0
+    q30_rate_post: Optional[float] = None              # Scale 0.0 - 1.0
+    gc_content_pct: Optional[float] = None             # Scale 0.0 - 100.0
+    mean_read_length_pre: Optional[float] = None
+    mean_read_length_post: Optional[float] = None
+    per_base_quality_cycles: List[Dict[str, Any]] = field(default_factory=list)
+    read_length_distribution: Dict[int, int] = field(default_factory=dict)
+
+
+@dataclass
 class AlignmentSummary:
     """Block 3 Formal Summary."""
     mapped_reads_mt: Optional[int] = None
@@ -289,6 +384,21 @@ class AlignmentSummary:
     coverage_breadth_5x: Optional[float] = None
     coverage_breadth_10x: Optional[float] = None
     duplication_rate: Optional[float] = None
+
+
+@dataclass
+class MacroComplexCoverageSummary:
+    """Coverage depth and breadth across mitochondrial functional complexes (Block 6)."""
+    cov_dloop_mean: Optional[float] = None
+    cov_dloop_1x: Optional[float] = None
+    cov_rrna_mean: Optional[float] = None
+    cov_rrna_1x: Optional[float] = None
+    cov_cox_mean: Optional[float] = None
+    cov_cox_1x: Optional[float] = None
+    cov_nd_mean: Optional[float] = None
+    cov_nd_1x: Optional[float] = None
+    cov_cyb_mean: Optional[float] = None
+    cov_cyb_1x: Optional[float] = None
 
 
 @dataclass
@@ -313,7 +423,7 @@ class ContaminationSummary:
     ci_95_lower: Optional[float] = None
     ci_95_upper: Optional[float] = None
     estimation_confidence: str = "UNRELIABLE"
-    recommended_action: str = "INSUFFICIENT_DATA"
+    recommended_action: str = "EXCLUDE_OR_MANUAL_REVIEW"
     estimate_source: str = "NONE"
     contaminant_haplogroups: List[str] = field(default_factory=list)
 
@@ -343,6 +453,8 @@ class HaplogroupSummary:
     subclade_shift_detected: bool = False
     subclade_shift_supported: Optional[bool] = None
     contaminant_affinity: str = "NOT_APPLICABLE"
+    found_diagnostic_mutations: List[str] = field(default_factory=list)
+    missing_diagnostic_mutations: List[str] = field(default_factory=list)
 
 
 # ==============================================================================
@@ -359,7 +471,9 @@ class SampleMasterRecord:
     )
 
     preprocessing: PreprocessingSummary = field(default_factory=PreprocessingSummary)
+    sequencing_qc: SequencingQCSummary = field(default_factory=SequencingQCSummary)
     alignment: AlignmentSummary = field(default_factory=AlignmentSummary)
+    macro_complexes: MacroComplexCoverageSummary = field(default_factory=MacroComplexCoverageSummary)
     authenticity: AuthenticitySummary = field(default_factory=AuthenticitySummary)
     contamination: ContaminationSummary = field(default_factory=ContaminationSummary)
     consensus: ConsensusSummary = field(default_factory=ConsensusSummary)
@@ -416,7 +530,7 @@ class SampleMasterRecord:
                         )
                     )
 
-        # 3. Active check on endogenous DNA fraction
+        # 3. Derive endogenous DNA fraction if missing
         if self.alignment.endogenous_dna_fraction is None:
             raw = self.preprocessing.raw_reads_total
             mapped = self.alignment.mapped_reads_mt
@@ -424,26 +538,50 @@ class SampleMasterRecord:
                 self.alignment.endogenous_dna_fraction = round(mapped / raw, 6)
                 self.alignment.endogenous_dna_fraction_source = "DERIVED_BLOCK2+BLOCK3"
 
-        # 4. Mathematical probability bounds [0.0, 1.0]
-        bounded_fields = [
+        # 4. Probability bounds check [0.0, 1.0] for fractional fields
+        bounded_fractions = [
             ("retention_fraction", self.preprocessing.retention_fraction),
             ("collapsed_fraction", self.preprocessing.collapsed_fraction),
+            ("q20_rate_post", self.sequencing_qc.q20_rate_post),
+            ("q30_rate_post", self.sequencing_qc.q30_rate_post),
             ("endogenous_dna_fraction", self.alignment.endogenous_dna_fraction),
             ("coverage_breadth_1x", self.alignment.coverage_breadth_1x),
             ("coverage_breadth_3x", self.alignment.coverage_breadth_3x),
+            ("coverage_breadth_5x", self.alignment.coverage_breadth_5x),
             ("duplication_rate", self.alignment.duplication_rate),
+            ("cov_dloop_1x", self.macro_complexes.cov_dloop_1x),
+            ("cov_rrna_1x", self.macro_complexes.cov_rrna_1x),
+            ("cov_cox_1x", self.macro_complexes.cov_cox_1x),
+            ("cov_nd_1x", self.macro_complexes.cov_nd_1x),
+            ("cov_cyb_1x", self.macro_complexes.cov_cyb_1x),
             ("pmd_fraction_ge_3", self.authenticity.pmd_fraction_ge_3),
             ("covered_fraction", self.consensus.covered_fraction),
             ("n_fraction_canonical", self.consensus.n_fraction_canonical),
             ("contamination_fraction", self.contamination.contamination_fraction),
         ]
-        for name, val in bounded_fields:
+        for name, val in bounded_fractions:
             if val is not None and not (-1e-6 <= val <= 1.0001):
                 violations.append(
                     InvariantViolation(
                         code="UPSTREAM_CONTRACT_ANOMALY",
                         severity=WarningSeverity.CRITICAL,
                         message=f"Field '{name}' value {val} violates mathematical probability bounds [0.0, 1.0].",
+                        context={"field": name, "value": val},
+                    )
+                )
+
+        # 5. Percentage bounds check [0.0, 100.0] for fields with _pct suffix
+        bounded_pcts = [
+            ("adapter_trimmed_reads_pct", self.sequencing_qc.adapter_trimmed_reads_pct),
+            ("gc_content_pct", self.sequencing_qc.gc_content_pct),
+        ]
+        for name, val in bounded_pcts:
+            if val is not None and not (-1e-6 <= val <= 100.0001):
+                violations.append(
+                    InvariantViolation(
+                        code="UPSTREAM_CONTRACT_ANOMALY",
+                        severity=WarningSeverity.CRITICAL,
+                        message=f"Field '{name}' value {val} violates percentage bounds [0.0, 100.0].",
                         context={"field": name, "value": val},
                     )
                 )
@@ -500,7 +638,9 @@ class SampleMasterRecord:
             "synthesis_timestamp": self.synthesis_timestamp,
             "narrative": self.get_warning_narrative(),
             "preprocessing": asdict(self.preprocessing),
+            "sequencing_qc": asdict(self.sequencing_qc),
             "alignment": asdict(self.alignment),
+            "macro_complexes": asdict(self.macro_complexes),
             "authenticity": {
                 **asdict(self.authenticity),
                 "biological_type": self.authenticity.biological_type.value,
@@ -521,7 +661,10 @@ class SampleMasterRecord:
         }
 
     def to_summary_tsv_row(self) -> List[str]:
-        """Emit flattened row strictly formatted and positional-parity verified against SAMPLE_MASTER_TSV_HEADERS."""
+        """
+        Emit flattened row strictly formatted and positional-parity verified
+        against SAMPLE_MASTER_TSV_HEADERS (single source of truth for cohort exports).
+        """
         active_warns = [w.code for w in self.warnings]
         warn_str = "; ".join(active_warns) if active_warns else "CLEAN"
 
@@ -531,12 +674,15 @@ class SampleMasterRecord:
             ci_str = f"[{self.contamination.ci_95_lower:.4f}-{self.contamination.ci_95_upper:.4f}]"
 
         shift_supp_str = format_na(self.haplogroup.subclade_shift_supported)
+        mc = self.macro_complexes
+        sq = self.sequencing_qc
 
         row = [
+            # 1. General Identifiers
             self.sample_id,
             self.overall_status,
             self.authenticity.biological_type.value,
-            # Block 7
+            # 2. Block 7 (Phylogeny & Lineage)
             self.haplogroup.primary_haplogroup,
             self.haplogroup.resolved_haplogroup,
             format_na(self.haplogroup.quality_score, "{:.4f}"),
@@ -544,34 +690,52 @@ class SampleMasterRecord:
             self.haplogroup.haplogroup_status,
             "TRUE" if self.haplogroup.subclade_shift_detected else "FALSE",
             shift_supp_str,
-            # Block 2
-            format_na(self.preprocessing.raw_reads_total),
-            format_na(self.preprocessing.retained_reads_total),
+            # 3. Sequencing QC & Trimming (Block 2)
+            format_na(sq.raw_reads_total if sq.raw_reads_total is not None else self.preprocessing.raw_reads_total),
+            format_na(sq.clean_reads_total if sq.clean_reads_total is not None else self.preprocessing.retained_reads_total),
             format_na(self.preprocessing.retention_fraction, "{:.4f}"),
             format_na(self.preprocessing.collapsed_fraction, "{:.4f}"),
-            # Block 3
+            format_pct_100(sq.adapter_trimmed_reads_pct),
+            format_pct_fraction(sq.q20_rate_post),
+            format_pct_fraction(sq.q30_rate_post),
+            format_pct_100(sq.gc_content_pct),
+            format_na(sq.mean_read_length_pre, "{:.1f}"),
+            format_na(sq.mean_read_length_post, "{:.1f}"),
+            # 4. Block 3 (Alignment & Whole-mt Coverage)
             format_na(self.alignment.mapped_reads_mt),
             format_na(self.alignment.endogenous_dna_fraction, "{:.4f}"),
             format_na(self.alignment.endogenous_dna_fraction_source),
             format_na(self.alignment.mean_depth, "{:.2f}"),
             format_na(self.alignment.coverage_breadth_1x, "{:.4f}"),
             format_na(self.alignment.coverage_breadth_3x, "{:.4f}"),
+            format_na(self.alignment.coverage_breadth_5x, "{:.4f}"),
             format_na(self.alignment.duplication_rate, "{:.4f}"),
-            # Block 4
+            # 5. Mitochondrial Macro-Complexes Coverage (Block 6)
+            format_na(mc.cov_dloop_mean, "{:.1f}"),
+            format_pct_fraction(mc.cov_dloop_1x),
+            format_na(mc.cov_rrna_mean, "{:.1f}"),
+            format_pct_fraction(mc.cov_rrna_1x),
+            format_na(mc.cov_cox_mean, "{:.1f}"),
+            format_pct_fraction(mc.cov_cox_1x),
+            format_na(mc.cov_nd_mean, "{:.1f}"),
+            format_pct_fraction(mc.cov_nd_1x),
+            format_na(mc.cov_cyb_mean, "{:.1f}"),
+            format_pct_fraction(mc.cov_cyb_1x),
+            # 6. Block 4 (Authenticity & Degradation Kinetics)
             format_na(self.authenticity.median_fragment_length, "{:.1f}"),
             format_na(self.authenticity.pmd_fraction_ge_3, "{:.4f}"),
             format_na(self.authenticity.c_to_t_5p_rate_pos1, "{:.4f}"),
             format_na(self.authenticity.g_to_a_3p_rate_pos1, "{:.4f}"),
             "TRUE" if self.authenticity.rescaling_performed else "FALSE",
-            # Block 5
+            # 7. Block 5 (Contamination Assessment)
             contam_str,
             ci_str,
             self.contamination.estimation_confidence,
             self.contamination.recommended_action,
-            # Block 6
+            # 8. Block 6 (Consensus & Heteroplasmy)
             format_na(self.consensus.n_fraction_canonical, "{:.4f}"),
             str(self.consensus.heteroplasmy_sites_pass),
-            # Synthesis
+            # 9. Block 8 Synthesis & Audit
             str(len(self.mutations)),
             str(len(self.warnings)),
             warn_str,

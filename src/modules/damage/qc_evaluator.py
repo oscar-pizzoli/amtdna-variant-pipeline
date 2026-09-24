@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from src.modules.damage.models import (
     AuthenticationVerdict,
     BayesianDamageParameters,
@@ -31,11 +33,17 @@ logger = logging.getLogger("mtDNA_Pipeline.DamageQCEvaluator")
 
 
 def _damage_json_serializer(obj: Any) -> Any:
-    """Robust JSON encoder helper ensuring clean Enum.value and string Path exports."""
+    """Robust JSON encoder helper ensuring clean Enum.value, string Path, and numpy scalar exports."""
     if isinstance(obj, Enum):
         return obj.value
     if isinstance(obj, Path):
         return str(obj)
+    if isinstance(obj, (np.integer, int)):
+        return int(obj)
+    if isinstance(obj, (np.floating, float)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
@@ -138,7 +146,6 @@ class DamageQCValidator:
                 )
 
         # 3. Categorize empirical signal level
-        # Strong Signal: High 5' and 3' rates, single-strand 5' rate >= strong threshold, or delta_S >= 0.20
         is_strong_both = (
             c_to_t_5p >= policy.min_c_to_t_5p_strong_threshold
             and g_to_a_3p >= policy.min_g_to_a_3p_strong_threshold
@@ -334,12 +341,15 @@ class DamageQCValidator:
         # 7. Clean JSON artifact export with custom encoder
         if output_json_dir:
             output_json_dir.mkdir(parents=True, exist_ok=True)
-            json_file = output_json_dir / f"{sample_id}.damage_model.json"
+            json_model_file = output_json_dir / f"{sample_id}.damage_model.json"
+            json_legacy_file = output_json_dir / f"{sample_id}.damage.json"
+            payload = profile.to_dict()
             try:
-                with open(json_file, "w", encoding="utf-8") as jf:
-                    json.dump(profile.to_dict(), jf, indent=2, default=_damage_json_serializer)
-                outputs.damage_model_json = json_file
-                logger.info(f"[{sample_id}] Exported damage model profile -> {json_file.name}")
+                for jf_path in (json_model_file, json_legacy_file):
+                    with open(jf_path, "w", encoding="utf-8") as jf:
+                        json.dump(payload, jf, indent=2, default=_damage_json_serializer)
+                outputs.damage_model_json = json_model_file
+                logger.info(f"[{sample_id}] Exported damage model profiles -> {json_model_file.name}, {json_legacy_file.name}")
             except Exception as exc:
                 logger.warning(f"[{sample_id}] Failed to serialize damage model JSON: {exc}")
 

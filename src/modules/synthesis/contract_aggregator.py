@@ -4,6 +4,7 @@ consolidation of upstream contracts (Blocks 2 -> 7) into SampleMasterRecord.
 Guarantees strict type safety, string-to-flag parsing, and non-destructive failure handling.
 """
 
+import csv
 from dataclasses import dataclass
 import hashlib
 import json
@@ -24,6 +25,7 @@ from src.modules.synthesis.models import (
     PreprocessingSummary,
     SampleBiologicalType,
     SampleMasterRecord,
+    SequencingQCSummary,
     WarningCategory,
     WarningSeverity,
 )
@@ -50,6 +52,8 @@ class ContractFileSet:
     damage_json: Optional[Path] = None
     consensus_qc_json: Optional[Path] = None
     contamination_json: Optional[Path] = None
+    haplogroup_json: Optional[Path] = None
+    haplogrep_raw_report: Optional[Path] = None
 
 
 class ContractAggregator:
@@ -94,8 +98,14 @@ class ContractAggregator:
         "SCHEMA_CORRUPTION": WarningCategory.PIPELINE_INTEGRITY,
     }
 
-    def __init__(self, results_dir: Path) -> None:
-        self.results_dir = Path(results_dir)
+    def __init__(
+        self,
+        operational_files_dir: Optional[Path] = None,
+        results_dir: Optional[Path] = None,
+    ) -> None:
+        target = operational_files_dir or results_dir or Path("operational_files")
+        self.operational_files_dir = Path(target)
+        self.results_dir = Path(results_dir) if results_dir else self.operational_files_dir
 
     # --------------------------------------------------------------------------
     # Defensive Type Casting Helpers
@@ -157,6 +167,8 @@ class ContractAggregator:
 
         # Block 2
         for p in [
+            self.operational_files_dir / "preprocessing" / sample_id / f"{sample_id}.block2_contract.json",
+            self.operational_files_dir / "alignment" / sample_id / f"{sample_id}.block2_contract.json",
             self.results_dir / "preprocessing" / sample_id / f"{sample_id}.block2_contract.json",
             self.results_dir / "alignment" / sample_id / f"{sample_id}.block2_contract.json",
         ]:
@@ -166,6 +178,8 @@ class ContractAggregator:
 
         # Block 3
         for p in [
+            self.operational_files_dir / "alignment" / sample_id / f"{sample_id}.block3_contract.json",
+            self.operational_files_dir / "alignment" / sample_id / f"{sample_id}.alignment_qc.json",
             self.results_dir / "alignment" / sample_id / f"{sample_id}.block3_contract.json",
             self.results_dir / "alignment" / sample_id / f"{sample_id}.alignment_qc.json",
         ]:
@@ -174,43 +188,92 @@ class ContractAggregator:
                 break
 
         # Block 4
-        b4_path = self.results_dir / "damage" / sample_id / f"{sample_id}.block4_contract.json"
-        if b4_path.is_file():
-            cset.block4 = b4_path
-        damage_json = self.results_dir / "damage" / sample_id / f"{sample_id}.damage.json"
-        if damage_json.is_file():
-            cset.damage_json = damage_json
+        for p in [
+            self.operational_files_dir / "damage" / sample_id / f"{sample_id}.block4_contract.json",
+            self.results_dir / "damage" / sample_id / f"{sample_id}.block4_contract.json",
+        ]:
+            if p.is_file():
+                cset.block4 = p
+                break
+
+        for p in [
+            self.operational_files_dir / "damage" / sample_id / f"{sample_id}.damage.json",
+            self.operational_files_dir / "damage" / sample_id / f"{sample_id}.damage_model.json",
+            self.results_dir / "damage" / sample_id / f"{sample_id}.damage.json",
+            self.results_dir / "damage" / sample_id / f"{sample_id}.damage_model.json",
+        ]:
+            if p.is_file():
+                cset.damage_json = p
+                break
 
         # Block 5
-        b5_path = self.results_dir / "contamination" / sample_id / f"{sample_id}.block5_contract.json"
-        if b5_path.is_file():
-            cset.block5 = b5_path
-        contam_json = self.results_dir / "contamination" / sample_id / f"{sample_id}.schmutzi_summary.json"
-        if contam_json.is_file():
-            cset.contamination_json = contam_json
+        for p in [
+            self.operational_files_dir / "contamination" / sample_id / f"{sample_id}.block5_contract.json",
+            self.results_dir / "contamination" / sample_id / f"{sample_id}.block5_contract.json",
+        ]:
+            if p.is_file():
+                cset.block5 = p
+                break
+
+        for p in [
+            self.operational_files_dir / "contamination" / sample_id / f"{sample_id}.schmutzi_summary.json",
+            self.results_dir / "contamination" / sample_id / f"{sample_id}.schmutzi_summary.json",
+        ]:
+            if p.is_file():
+                cset.contamination_json = p
+                break
 
         # Block 6
-        b6_path = self.results_dir / "consensus" / sample_id / f"{sample_id}.block6_contract.json"
-        if b6_path.is_file():
-            cset.block6 = b6_path
-        qc_json = self.results_dir / "consensus" / sample_id / f"{sample_id}.consensus_qc.json"
-        if qc_json.is_file():
-            cset.consensus_qc_json = qc_json
+        for p in [
+            self.operational_files_dir / "consensus" / sample_id / f"{sample_id}.block6_contract.json",
+            self.results_dir / "consensus" / sample_id / f"{sample_id}.block6_contract.json",
+        ]:
+            if p.is_file():
+                cset.block6 = p
+                break
 
-        # Block 7
-        b7_path = self.results_dir / "haplogroup" / sample_id / f"{sample_id}.block7_contract.json"
-        if b7_path.is_file():
-            cset.block7 = b7_path
+        for p in [
+            self.operational_files_dir / "consensus" / sample_id / f"{sample_id}.consensus_qc.json",
+            self.results_dir / "consensus" / sample_id / f"{sample_id}.consensus_qc.json",
+        ]:
+            if p.is_file():
+                cset.consensus_qc_json = p
+                break
+
+        # Block 7 Primary Contract
+        for p in [
+            self.operational_files_dir / "haplogroup" / sample_id / f"{sample_id}.block7_contract.json",
+            self.results_dir / "haplogroup" / sample_id / f"{sample_id}.block7_contract.json",
+        ]:
+            if p.is_file():
+                cset.block7 = p
+                break
+
+        # Block 7 Companion JSON
+        for p in [
+            self.operational_files_dir / "haplogroup" / sample_id / f"{sample_id}.haplogroup.json",
+            self.results_dir / "haplogroup" / sample_id / f"{sample_id}.haplogroup.json",
+        ]:
+            if p.is_file():
+                cset.haplogroup_json = p
+                break
+
+        # Block 7 Companion Raw TSV Report (HaploGrep3 output)
+        for p in [
+            self.operational_files_dir / "haplogroup" / sample_id / f"{sample_id}_fasta.txt",
+            self.operational_files_dir / "haplogroup" / sample_id / f"{sample_id}.haplogrep.fasta.raw.txt",
+            self.operational_files_dir / "haplogroup" / sample_id / f"{sample_id}.haplogrep.txt",
+            self.results_dir / "haplogroups" / sample_id / f"{sample_id}.haplogroup_report.txt",
+            self.results_dir / "haplogroup" / sample_id / f"{sample_id}_fasta.txt",
+        ]:
+            if p.is_file():
+                cset.haplogrep_raw_report = p
+                break
 
         return cset
 
     @staticmethod
     def _read_json_safely(path: Optional[Path]) -> Optional[Dict[str, Any]]:
-        """
-        Read and parse JSON artifact.
-        Returns None if path is None or file physically does not exist.
-        Raises ContractIngestionError if file exists but is empty, truncated, or invalid JSON.
-        """
         if path is None or not path.is_file():
             return None
         if path.stat().st_size == 0:
@@ -235,7 +298,6 @@ class ContractAggregator:
 
     @staticmethod
     def calculate_file_sha256(path: Path) -> str:
-        """Compute SHA-256 hex digest for an on-disk contract file."""
         hasher = hashlib.sha256()
         with open(path, "rb") as fp:
             while chunk := fp.read(65536):
@@ -243,10 +305,6 @@ class ContractAggregator:
         return hasher.hexdigest()
 
     def compute_upstream_composite_hash(self, cset: ContractFileSet) -> Tuple[str, Dict[str, str]]:
-        """
-        Compute a composite hash derived strictly from the content of available contracts.
-        Returns: (composite_sha256, dict_of_individual_hashes)
-        """
         composite_hasher = hashlib.sha256()
         individual_hashes: Dict[str, str] = {}
 
@@ -266,10 +324,6 @@ class ContractAggregator:
     # Polymorphic Warning Classification
     # --------------------------------------------------------------------------
     def _classify_flag(self, raw_flag: Any, source_block: str = "UNKNOWN") -> CategorizedWarning:
-        """
-        Convert raw audit flags (strings, dicts, or objects) into a typed CategorizedWarning.
-        Disassembles string formats like 'SEVERITY:CODE:MESSAGE' or 'CODE' gracefully.
-        """
         ctx: Dict[str, Any] = {}
         raw_code: str = "UPSTREAM_CONTRACT_ANOMALY"
         raw_sev: str = "WARNING"
@@ -333,7 +387,6 @@ class ContractAggregator:
             raw_sev = str(raw_sev.value)
         raw_sev = str(raw_sev).strip().upper()
 
-        # Resolve formal WarningSeverity
         if "CRIT" in raw_sev:
             severity = WarningSeverity.CRITICAL
         elif "INFO" in raw_sev:
@@ -341,10 +394,8 @@ class ContractAggregator:
         else:
             severity = WarningSeverity.WARNING
 
-        # 1. Exact match in taxonomy
         category = self.CODE_CATEGORY_MAP.get(raw_code)
 
-        # 2. Heuristic fallback with unmapped tracking
         if category is None:
             ctx["unmapped_code"] = True
             if any(term in raw_code for term in ("CONTRACT", "SCHEMA", "HASH", "PROVENANCE", "VERSION")):
@@ -377,10 +428,6 @@ class ContractAggregator:
         sample_id: str,
         contracts: Optional[ContractFileSet] = None,
     ) -> SampleMasterRecord:
-        """
-        Ingest, aggregate, and normalize all upstream block outputs for a specimen.
-        Guarantees non-destructive failure handling and strict invariants enforcement.
-        """
         cset = contracts or self.locate_contracts(sample_id)
         composite_hash, contract_hashes = self.compute_upstream_composite_hash(cset)
 
@@ -388,16 +435,42 @@ class ContractAggregator:
         exec_times: Dict[str, float] = {}
 
         # ----------------------------------------------------------------------
-        # Ingest Contract 2 (Preprocessing)
+        # Ingest Contract 2 (Preprocessing & Sequencing QC)
         # ----------------------------------------------------------------------
         d_b2 = self._read_json_safely(cset.block2)
         prep_sum = PreprocessingSummary()
+        seq_qc_sum = SequencingQCSummary()
+
         if d_b2:
-            prep_sum.raw_reads_total = self._safe_int(d_b2.get("raw_reads_total"))
-            prep_sum.retained_reads_total = self._safe_int(d_b2.get("retained_reads_total"))
-            prep_sum.retention_fraction = self._safe_float(d_b2.get("retention_fraction"))
-            prep_sum.collapsed_fraction = self._safe_float(d_b2.get("collapsed_fraction"))
-            prep_sum.output_profile = self._safe_str(d_b2.get("output_profile"), "UNKNOWN")
+            raw_r = self._safe_int(d_b2.get("raw_reads_total"))
+            ret_r = self._safe_int(d_b2.get("retained_reads_total") or d_b2.get("clean_reads_total"))
+            ret_f = self._safe_float(d_b2.get("retention_fraction"))
+            col_f = self._safe_float(d_b2.get("collapsed_fraction"))
+            out_p = self._safe_str(d_b2.get("output_profile"), "UNKNOWN")
+
+            prep_sum.raw_reads_total = raw_r
+            prep_sum.retained_reads_total = ret_r
+            prep_sum.retention_fraction = ret_f
+            prep_sum.collapsed_fraction = col_f
+            prep_sum.output_profile = out_p
+
+            seq_qc_sum.raw_reads_total = raw_r
+            seq_qc_sum.clean_reads_total = ret_r
+            seq_qc_sum.retention_fraction = ret_f
+            seq_qc_sum.collapsed_fraction = col_f
+
+            # Extract adapter trimming with automatic fallback for collapsed libraries
+            adapt_pct = self._safe_float(d_b2.get("adapter_trimmed_reads_pct"))
+            if adapt_pct is None and col_f is not None:
+                adapt_pct = round(col_f * 100.0, 2)
+            seq_qc_sum.adapter_trimmed_reads_pct = adapt_pct
+
+            seq_qc_sum.q20_rate_post = self._safe_float(d_b2.get("q20_rate_post"))
+            seq_qc_sum.q30_rate_post = self._safe_float(d_b2.get("q30_rate_post"))
+            seq_qc_sum.gc_content_pct = self._safe_float(d_b2.get("gc_content_pct"))
+            seq_qc_sum.mean_read_length_pre = self._safe_float(d_b2.get("mean_read_length_pre"))
+            seq_qc_sum.mean_read_length_post = self._safe_float(d_b2.get("mean_read_length_post"))
+
             if "execution_time_seconds" in d_b2:
                 exec_times["block2"] = self._safe_float(d_b2["execution_time_seconds"]) or 0.0
 
@@ -421,7 +494,6 @@ class ContractAggregator:
             if "execution_time_seconds" in d_b3:
                 exec_times["block3"] = self._safe_float(d_b3["execution_time_seconds"]) or 0.0
 
-        # Active calculation of endogenous DNA fraction if missing
         if aln_sum.endogenous_dna_fraction is None:
             raw_tot = prep_sum.raw_reads_total
             mapped_mt = aln_sum.mapped_reads_mt
@@ -439,7 +511,7 @@ class ContractAggregator:
             auth_sum.authentication_status = auth_str
             if "AUTHENTIC_ANCIENT" in auth_str:
                 auth_sum.biological_type = SampleBiologicalType.ANCIENT
-            elif "MODERN" in auth_str or "ZERO_DAMAGE" in auth_str:
+            elif any(k in auth_str for k in ("MODERN", "ZERO_DAMAGE", "AUTHENTICITY_UNSUPPORTED")):
                 auth_sum.biological_type = SampleBiologicalType.MODERN
             else:
                 auth_sum.biological_type = SampleBiologicalType.UNKNOWN
@@ -447,38 +519,39 @@ class ContractAggregator:
             auth_sum.rescaling_performed = bool(d_b4.get("rescaling_performed", False))
             auth_sum.damage_model_id = self._safe_str(d_b4.get("damage_model_id"), "UNKNOWN")
             auth_sum.library_treatment = self._safe_str(d_b4.get("library_treatment"), "NON_UDG")
+
+            # Primary direct mapping from contract
+            auth_sum.median_fragment_length = self._safe_float(d_b4.get("median_fragment_length"))
+            auth_sum.mean_fragment_length = self._safe_float(d_b4.get("mean_fragment_length"))
+            auth_sum.pmd_fraction_ge_3 = self._safe_float(d_b4.get("pmd_fraction_ge_3"))
+            auth_sum.c_to_t_5p_rate_pos1 = self._safe_float(d_b4.get("c_to_t_5p_rate_pos1"))
+            auth_sum.g_to_a_3p_rate_pos1 = self._safe_float(d_b4.get("g_to_a_3p_rate_pos1"))
+
             if "execution_time_seconds" in d_b4:
                 exec_times["block4"] = self._safe_float(d_b4["execution_time_seconds"]) or 0.0
-        else:
-            warnings.append(
-                CategorizedWarning(
-                    category=WarningCategory.PIPELINE_INTEGRITY,
-                    code="MISSING_UPSTREAM_CONTRACT",
-                    severity=WarningSeverity.CRITICAL,
-                    source_block="BLOCK4",
-                    message=f"Block 4 contract missing for '{sample_id}'. Authenticity unverified.",
-                    context={"missing_contract": "block4"},
-                )
-            )
 
-        # Ingest companion damage.json if available
+        # Fallback inspection on damage_model.json / damage.json using verified keys
         d_dam = self._read_json_safely(cset.damage_json)
         if d_dam:
-            fl_metrics = d_dam.get("fragment_length_metrics") or {}
-            auth_sum.median_fragment_length = self._safe_float(fl_metrics.get("median_length"))
-            auth_sum.mean_fragment_length = self._safe_float(fl_metrics.get("mean_length"))
+            fl_obj = d_dam.get("fragment_length") or d_dam.get("fragment_length_metrics") or {}
+            if auth_sum.median_fragment_length is None:
+                auth_sum.median_fragment_length = self._safe_float(fl_obj.get("median_length_bp") or fl_obj.get("median_length"))
+            if auth_sum.mean_fragment_length is None:
+                auth_sum.mean_fragment_length = self._safe_float(fl_obj.get("mean_length_bp") or fl_obj.get("mean_length"))
 
-            pmd_metrics = d_dam.get("pmd_metrics") or {}
-            auth_sum.pmd_fraction_ge_3 = self._safe_float(pmd_metrics.get("fraction_pmd_ge_3"))
+            pmd_obj = d_dam.get("pmd_metrics") or {}
+            if auth_sum.pmd_fraction_ge_3 is None:
+                auth_sum.pmd_fraction_ge_3 = self._safe_float(pmd_obj.get("fraction_pmd_ge_3"))
 
-            prof = d_dam.get("profile") or {}
-            d5p = prof.get("damage_5p") or {}
-            d3p = prof.get("damage_3p") or {}
-            auth_sum.c_to_t_5p_rate_pos1 = self._safe_float(d5p.get("1") or d5p.get(1))
-            auth_sum.g_to_a_3p_rate_pos1 = self._safe_float(d3p.get("1") or d3p.get(1))
+            td_obj = d_dam.get("terminal_damage") or d_dam.get("profile", {}).get("damage_5p", {})
+            if auth_sum.c_to_t_5p_rate_pos1 is None:
+                auth_sum.c_to_t_5p_rate_pos1 = self._safe_float(td_obj.get("c_to_t_5p_pos1_fraction") or td_obj.get("1"))
+            if auth_sum.g_to_a_3p_rate_pos1 is None:
+                td_3p = d_dam.get("terminal_damage") or d_dam.get("profile", {}).get("damage_3p", {})
+                auth_sum.g_to_a_3p_rate_pos1 = self._safe_float(td_3p.get("g_to_a_3p_pos1_fraction") or td_3p.get("1"))
 
         # ----------------------------------------------------------------------
-        # Ingest Contract 5 (Contamination) - Preserving Missingness Semantics
+        # Ingest Contract 5 (Contamination)
         # ----------------------------------------------------------------------
         d_b5 = self._read_json_safely(cset.block5)
         contam_sum = ContaminationSummary()
@@ -487,10 +560,13 @@ class ContractAggregator:
             contam_sum.estimation_confidence = self._safe_str(d_b5.get("estimation_confidence"), "UNRELIABLE")
             contam_sum.estimate_source = self._safe_str(d_b5.get("contamination_estimate_source"), "NONE")
 
+            # Primary direct mapping of confidence interval bounds from contract
+            contam_sum.ci_95_lower = self._safe_float(d_b5.get("ci_95_lower"))
+            contam_sum.ci_95_upper = self._safe_float(d_b5.get("ci_95_upper"))
+
             raw_cf = d_b5.get("contamination_fraction")
             parsed_cf = self._safe_float(raw_cf)
             if raw_cf is not None and parsed_cf is None:
-                # Malformed non-numeric value: keep None, record CRITICAL flag
                 contam_sum.contamination_fraction = None
                 contam_sum.recommended_action = "INSUFFICIENT_DATA"
                 contam_sum.estimation_confidence = "UNRELIABLE"
@@ -512,7 +588,6 @@ class ContractAggregator:
             if "execution_time_seconds" in d_b5:
                 exec_times["block5"] = self._safe_float(d_b5["execution_time_seconds"]) or 0.0
         else:
-            # Missing contract: Keep None, set action to INSUFFICIENT_DATA, flag CRITICAL
             contam_sum.contamination_fraction = None
             contam_sum.recommended_action = "INSUFFICIENT_DATA"
             contam_sum.estimation_confidence = "UNRELIABLE"
@@ -528,13 +603,16 @@ class ContractAggregator:
                 )
             )
 
-        # Ingest companion contamination JSON for CI
-        d_contam_comp = self._read_json_safely(cset.contamination_json)
-        if d_contam_comp:
-            ci = d_contam_comp.get("ci_95") or d_contam_comp.get("contamination_ci_95")
-            if isinstance(ci, (list, tuple)) and len(ci) == 2:
-                contam_sum.ci_95_lower = self._safe_float(ci[0])
-                contam_sum.ci_95_upper = self._safe_float(ci[1])
+        # Fallback to companion JSON if confidence bounds were not present in contract
+        if contam_sum.ci_95_lower is None or contam_sum.ci_95_upper is None:
+            d_contam_comp = self._read_json_safely(cset.contamination_json)
+            if d_contam_comp:
+                ci = d_contam_comp.get("ci_95") or d_contam_comp.get("contamination_ci_95")
+                if isinstance(ci, (list, tuple)) and len(ci) == 2:
+                    if contam_sum.ci_95_lower is None:
+                        contam_sum.ci_95_lower = self._safe_float(ci[0])
+                    if contam_sum.ci_95_upper is None:
+                        contam_sum.ci_95_upper = self._safe_float(ci[1])
 
         # ----------------------------------------------------------------------
         # Ingest Contract 6 (Consensus & Heteroplasmy)
@@ -562,7 +640,6 @@ class ContractAggregator:
                 )
             )
 
-        # Ingest companion consensus QC JSON
         d_cqc = self._read_json_safely(cset.consensus_qc_json)
         if d_cqc:
             cons_sum.iupac_fraction = self._safe_float(d_cqc.get("iupac_fraction"))
@@ -590,10 +667,61 @@ class ContractAggregator:
             if "execution_time_seconds" in d_b7:
                 exec_times["block7"] = self._safe_float(d_b7["execution_time_seconds"]) or 0.0
 
+            # Level 1: Estrazione da block7_contract.json
+            raw_found = d_b7.get("found_mutations") or []
+            hg_sum.found_diagnostic_mutations = [str(m) for m in raw_found] if isinstance(raw_found, list) else []
+
+            raw_missing = (
+                d_b7.get("missing_diagnostic_mutations")
+                or d_b7.get("missing_mutations")
+                or d_b7.get("not_found_mutations")
+                or d_b7.get("not_found_polys")
+                or []
+            )
+            hg_sum.missing_diagnostic_mutations = [str(m) for m in raw_missing] if isinstance(raw_missing, list) else []
+
+            # Level 2: Fallback su haplogroup.json
+            if not hg_sum.missing_diagnostic_mutations and cset.haplogroup_json:
+                d_hg = self._read_json_safely(cset.haplogroup_json)
+                if d_hg:
+                    miss_cand = d_hg.get("missing_mutations") or d_hg.get("missing_diagnostic_mutations") or []
+                    if isinstance(miss_cand, list) and miss_cand:
+                        hg_sum.missing_diagnostic_mutations = [str(m) for m in miss_cand]
+                    if not hg_sum.found_diagnostic_mutations:
+                        fnd_cand = d_hg.get("found_mutations") or []
+                        if isinstance(fnd_cand, list):
+                            hg_sum.found_diagnostic_mutations = [str(m) for m in fnd_cand]
+
+            # Level 3: Fallback diretto dal report esteso di HaploGrep3
+            if not hg_sum.missing_diagnostic_mutations and cset.haplogrep_raw_report and cset.haplogrep_raw_report.is_file():
+                try:
+                    with open(cset.haplogrep_raw_report, "r", encoding="utf-8") as fp:
+                        reader = csv.DictReader(fp, delimiter="\t")
+                        for r in reader:
+                            sid = r.get("SampleID") or r.get("Sample ID") or r.get("Sample") or ""
+                            if sid == sample_id or not sid:
+                                raw_nfp = r.get("Not_Found_Polys") or ""
+                                cleaned_nfp = re.sub(r"\s*\([^)]*\)", "", raw_nfp)
+                                hg_sum.missing_diagnostic_mutations = [t.strip() for t in cleaned_nfp.split() if t.strip()]
+                                if not hg_sum.found_diagnostic_mutations:
+                                    raw_fp = r.get("Found_Polys") or ""
+                                    cleaned_fp = re.sub(r"\s*\([^)]*\)", "", raw_fp)
+                                    hg_sum.found_diagnostic_mutations = [t.strip() for t in cleaned_fp.split() if t.strip()]
+                                break
+                except Exception as err:
+                    logger.debug(f"Could not read raw HaploGrep report for '{sample_id}': {err}")
+
             raw_flags = d_b7.get("flags") or []
             if isinstance(raw_flags, list):
                 for f in raw_flags:
-                    warnings.append(self._classify_flag(f, source_block="BLOCK7"))
+                    w = self._classify_flag(f, source_block="BLOCK7")
+                    # Arricchisce il messaggio di warning specificando le varianti esatte mancanti
+                    if w.code == "MISSING_DIAGNOSTIC_MUTATIONS" and hg_sum.missing_diagnostic_mutations:
+                        missing_str = ", ".join(hg_sum.missing_diagnostic_mutations)
+                        if missing_str not in w.message:
+                            w.message = f"{w.message}: [{missing_str}]"
+                        w.context["missing_diagnostic_mutations"] = hg_sum.missing_diagnostic_mutations
+                    warnings.append(w)
         else:
             warnings.append(
                 CategorizedWarning(
@@ -606,7 +734,7 @@ class ContractAggregator:
                 )
             )
 
-        # Cross-Contract Artifact Hash Integrity (Block 6 vs Block 7)
+        # Cross-Contract Artifact Hash Integrity
         if d_b6 and d_b7:
             b6_sha = self._safe_str(d_b6.get("consensus_fasta_sha256"), "")
             b7_sha = self._safe_str(d_b7.get("fasta_sha256"), "")
@@ -622,7 +750,6 @@ class ContractAggregator:
                     )
                 )
 
-        # Internal Contract Coherence Check (Block 7 overall_status vs critical flags)
         if d_b7 and overall_status_str == "PASS":
             b7_crit = [w for w in warnings if w.source_block == "BLOCK7" and w.severity == WarningSeverity.CRITICAL]
             if b7_crit:
@@ -637,11 +764,11 @@ class ContractAggregator:
                     )
                 )
 
-        # Instantiate Master Record
         record = SampleMasterRecord(
             sample_id=sample_id,
             overall_status=overall_status_str,
             preprocessing=prep_sum,
+            sequencing_qc=seq_qc_sum,
             alignment=aln_sum,
             authenticity=auth_sum,
             contamination=contam_sum,
@@ -655,7 +782,6 @@ class ContractAggregator:
             upstream_composite_hash=composite_hash,
         )
 
-        # Sanitize cross-field invariants with typed InvariantViolation mapping
         violations: List[InvariantViolation] = record.validate_invariants()
         for v in violations:
             record.warnings.append(
@@ -669,7 +795,6 @@ class ContractAggregator:
                 )
             )
 
-        # Strict derivation of final overall status
         if any(w.severity == WarningSeverity.CRITICAL for w in record.warnings):
             record.overall_status = "FAIL"
         elif any(w.severity == WarningSeverity.WARNING for w in record.warnings):

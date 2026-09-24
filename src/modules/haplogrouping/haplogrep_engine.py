@@ -45,20 +45,30 @@ class HaplogrepEngine:
         return binary
 
     def detect_version(self) -> str:
-        try:
-            res = subprocess.run(
-                [self._binary_path, "--version"],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=15,
-            )
-            raw_out = res.stdout.strip() or res.stderr.strip()
-            match = re.search(r"(\d+\.\d+(\.\d+)?)", raw_out)
-            return match.group(1) if match else raw_out
-        except Exception as err:
-            logger.warning(f"Could not determine haplogrep3 version: {err}")
-            return "unknown"
+        """
+        Detects HaploGrep3 version defensively without raising CalledProcessError on exit status 2.
+        Tries both 'haplogrep3 version' (canonical subcommand) and 'haplogrep3 --version'.
+        """
+        for cmd in ([self._binary_path, "version"], [self._binary_path, "--version"]):
+            try:
+                res = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                raw_out = (res.stdout or "") + (res.stderr or "")
+                match = re.search(r"(\d+\.\d+(?:\.\d+)?)", raw_out)
+                if match:
+                    return match.group(1)
+                for line in raw_out.splitlines():
+                    if "haplogrep" in line.lower():
+                        return line.strip()
+            except Exception:
+                continue
+
+        logger.warning("Could not determine haplogrep3 version")
+        return "unknown"
 
     def classify_fasta(
         self,
@@ -132,7 +142,7 @@ class HaplogrepEngine:
 
             if output_dir is not None and self.config.retain_raw_output:
                 output_dir.mkdir(parents=True, exist_ok=True)
-                dest_file = output_dir / f"{sample_id}.haplogrep.{input_type}.raw.txt"
+                dest_file = output_dir / f"{sample_id}.haplogrep.{input_type}.raw.tsv"
                 shutil.copyfile(tmp_out, dest_file)
                 persisted_raw_path = str(dest_file)
 

@@ -36,6 +36,7 @@ outcomestrictsettings/
 build/
 dist/
 scripts/
+operational_files/
 tests/
 # Intermediate / temporary bioinformatics files
 *.tmp

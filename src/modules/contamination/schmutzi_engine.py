@@ -203,7 +203,7 @@ class SchmutziEngine:
                         start=0,
                         stop=target_len,
                         truncate=True,
-                        stepper="all",  # Non scarta le coppie anomale o con mate su altro contig (FLAG 129)
+                        stepper="all",  # Do not discard anomalous pairs or reads with mate on another contig (FLAG 129)
                     )
                 )
 
@@ -474,6 +474,31 @@ class SchmutziEngine:
         return cmd
 
     @classmethod
+    def patch_posterior_deam(cls) -> bool:
+        """Ensures posteriorDeam.R correctly interprets newline escape sequences in plot titles."""
+        r_bin = shutil.which("posteriorDeam.R")
+        if not r_bin:
+            return False
+        try:
+            r_path = Path(r_bin)
+            if not r_path.is_file():
+                return False
+            content = r_path.read_text(encoding="utf-8", errors="replace")
+            if 'gsub("\\\\n", "\\n"' in content or 'gsub("\\n", "\n"' in content:
+                return True
+            if "title <- args[3]" in content:
+                patched = content.replace(
+                    "title <- args[3]",
+                    'title <- gsub("\\\\n", "\\n", args[3])'
+                )
+                r_path.write_text(patched, encoding="utf-8")
+                logger.info(f"Auto-patched {r_path} to resolve newline escapes in plot titles.")
+                return True
+        except Exception as exc:
+            logger.debug(f"Could not auto-patch posteriorDeam.R: {exc}")
+        return False
+
+    @classmethod
     def run_schmutzi_pipeline(
         cls,
         sample_id: str,
@@ -489,6 +514,9 @@ class SchmutziEngine:
         timeout_seconds: int = 7200,
     ) -> Tuple[ContaminationEstimate, ModelQualityDiagnostics, ContaminationOutputFiles, SchmutziExecutionMetadata]:
         """Executes full schmutzi workflow with adaptive deamination prior and auto-recovery on -nan crash."""
+        # Preemptive auto-patch to resolve literal \n escape sequences in PDF titles
+        cls.patch_posterior_deam()
+
         resolved_freqs_dir = cls.resolve_frequency_database_dir(contaminant_database)
 
         out_sample_dir = output_dir / sample_id
@@ -505,14 +533,14 @@ class SchmutziEngine:
         executed_commands: List[str] = []
         active_use_deam = use_deam_prior
 
-        # Risoluzione difensiva della configurazione di libreria a stringa
+        # Defensive resolution of library configuration to string
         lib_val = (
             policy.library_treatment.value
             if hasattr(policy.library_treatment, "value")
             else str(policy.library_treatment)
         ).upper()
 
-        # FASE 1: contDeam.pl (eseguito solo se use_deam_prior è True)
+        # PHASE 1: contDeam.pl (executed only if use_deam_prior is True)
         if active_use_deam:
             is_single = "SINGLE" in lib_val
             lib_str = "single" if is_single else "double"
@@ -548,7 +576,7 @@ class SchmutziEngine:
 
             if res_deam.returncode != 0:
                 err_content = stderr_log.read_text(encoding="utf-8", errors="replace").strip()
-                # Intercettazione del crash -nan per dati a danno assente o moderno
+                # Intercept -nan crash for zero-damage or modern data
                 if "destringify() Unable to convert string=\"-nan\"" in err_content or "string=\"-nan\"" in err_content:
                     logger.warning(
                         f"[{sample_id}] contDeam crashed on zero-damage data (-nan). "
@@ -560,7 +588,7 @@ class SchmutziEngine:
         else:
             logger.info(f"[{sample_id}] [Phase 1/2] Skipping contDeam (modern/zero-damage mode configured).")
 
-        # FASE 2: schmutzi.pl
+        # PHASE 2: schmutzi.pl
         raw_cmd_schmutzi = [
             "schmutzi.pl",
             "--t", str(policy.threads),
@@ -569,7 +597,7 @@ class SchmutziEngine:
 
         if not active_use_deam:
             raw_cmd_schmutzi.append("--notusepred")
-            # Iniezione difensiva del placeholder .deam.config per prevenire crash linea 578 di schmutzi.pl
+            # Defensive injection of placeholder .deam.config to prevent crash at line 578 of schmutzi.pl
             deam_config_file = Path(f"{prefix}.deam.config")
             if not deam_config_file.is_file():
                 try:
@@ -621,7 +649,7 @@ class SchmutziEngine:
             err_content = stderr_log.read_text(encoding="utf-8", errors="replace").strip()
             raise SchmutziExecutionError(f"schmutzi.pl terminated with exit code {res_schmutzi.returncode}: {err_content}")
 
-        # Raccolta Deliverable
+        # Deliverable collection
         cont_est_file = cls._find_deliverable(
             out_sample_dir, sample_id, ["_final.cont.est", ".cont.est", "_cont.est"]
         )
@@ -723,6 +751,7 @@ class SchmutziEngine:
         use_wrapped: bool = False,
         use_deam_prior: bool = True,
         library_treatment: Any = LibraryTreatment.NONE,
+        log_dir: Optional[Path] = None,
     ) -> SchmutziOutput:
         """High-level execution adapter matching ContaminationOrchestrator requirements."""
         policy = SchmutziPolicy(
@@ -732,7 +761,7 @@ class SchmutziEngine:
             use_wrapped_reference=use_wrapped,
             library_treatment=library_treatment,
         )
-        log_dir = output_dir / sample_id / "logs"
+        target_log_dir = log_dir or (output_dir / sample_id / "logs")
 
         estimate, diagnostics, outputs, audit = cls.run_schmutzi_pipeline(
             sample_id=sample_id,
@@ -740,7 +769,7 @@ class SchmutziEngine:
             reference_fasta=reference_fasta,
             contaminant_database=database_dir,
             output_dir=output_dir,
-            log_dir=log_dir,
+            log_dir=target_log_dir,
             policy=policy,
             use_deam_prior=use_deam_prior,
         )

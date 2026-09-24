@@ -88,15 +88,8 @@ class BAMValidationEngine:
 
     @classmethod
     def check_bgzf_eof(cls, bam_path: Path) -> bool:
-        """Verifies presence of the standard 28-byte BGZF EOF block to detect truncation.
-
-        Args:
-            bam_path: Target BAM file.
-
-        Returns:
-            True if EOF marker is present or verified via samtools quickcheck, False otherwise.
-        """
-        # Primo tentativo: samtools quickcheck se disponibile nel PATH
+        """Verifies presence of the standard 28-byte BGZF EOF block to detect truncation."""
+        # First attempt: samtools quickcheck if available in PATH
         if shutil.which("samtools") is not None:
             try:
                 res = subprocess.run(
@@ -108,10 +101,10 @@ class BAMValidationEngine:
             except OSError:
                 pass
 
-        # Fallback nativo: lettura binaria degli ultimi 28 byte
+        # Native fallback: binary read of trailing 28 bytes
         try:
             with open(bam_path, "rb") as stream:
-                stream.seek(0, 2)  # Vai a fine file
+                stream.seek(0, 2)  # Seek to end of file
                 file_size = stream.tell()
                 if file_size < 28:
                     return False
@@ -123,14 +116,7 @@ class BAMValidationEngine:
 
     @staticmethod
     def locate_index(bam_path: Path) -> Tuple[bool, Optional[str], Optional[Path]]:
-        """Checks for standard .bai or .csi indices in both naming conventions.
-
-        Args:
-            bam_path: Path to BAM file.
-
-        Returns:
-            Tuple of (index_found, index_type, index_path).
-        """
+        """Checks for standard .bai or .csi indices in both naming conventions."""
         candidates = [
             (bam_path.with_suffix(bam_path.suffix + ".bai"), "BAI"),
             (bam_path.with_suffix(".bai"), "BAI"),
@@ -149,16 +135,7 @@ class BAMValidationEngine:
         expected_contig: Optional[str] = None,
         auto_detect: bool = True,
     ) -> Optional[str]:
-        """Resolves target mitochondrial contig in BAM using exact match or authorized alias list.
-
-        Args:
-            bam_references: List of reference contigs present in BAM header.
-            expected_contig: User-configured contig name (strict if auto_detect=False).
-            auto_detect: Whether to search through common aliases if expected_contig is missing.
-
-        Returns:
-            Resolved contig name or None if not found.
-        """
+        """Resolves target mitochondrial contig in BAM using exact match or authorized alias list."""
         if expected_contig and expected_contig in bam_references:
             return expected_contig
 
@@ -176,16 +153,7 @@ class BAMValidationEngine:
         target_contig: str,
         sample_reads: int = 1000,
     ) -> bool:
-        """Verifies actual coordinate monotonicity for the target contig by sampling records.
-
-        Args:
-            bam: Open pysam AlignmentFile.
-            target_contig: Contig to inspect.
-            sample_reads: Number of contiguous reads to check.
-
-        Returns:
-            True if reads appear strictly sorted by leftmost coordinate.
-        """
+        """Verifies actual coordinate monotonicity for the target contig by sampling records."""
         try:
             last_pos = -1
             checked = 0
@@ -211,18 +179,7 @@ class BAMValidationEngine:
         auto_detect_contig: bool = True,
         auto_index: bool = True,
     ) -> BAMValidationResult:
-        """Executes full diagnostic validation on input BAM.
-
-        Args:
-            sample: Target SampleRecord instance.
-            expected_contig: Primary target mitochondrial contig name.
-            reference_fasta: Optional reference FASTA to check contig and length compatibility.
-            auto_detect_contig: Allow fallback to known mitochondrial aliases.
-            auto_index: Attempt index generation if missing.
-
-        Returns:
-            Populated BAMValidationResult instance.
-        """
+        """Executes full diagnostic validation on input BAM."""
         result = BAMValidationResult()
         bam_path = sample.inputs.bam_path
 
@@ -350,7 +307,7 @@ class BAMValidationEngine:
             elif reason.startswith("WARN:"):
                 sample.validation.add_warning(reason[6:])
 
-        # Log appropriate conclusion
+        # Log conclusion
         if result.status == ValidationStatus.PASS:
             logger.info(
                 f"[{sample.sample_id}] BAM Validation SUCCESS: {result.mt_mapped_reads} reads on contig '{result.detected_mt_contig}'."

@@ -133,7 +133,7 @@ class QualityRescaleEngine:
         if not damage_model_dir.is_dir():
             raise DamageRescaleError(f"Damage model folder not found: {damage_model_dir}")
 
-        # Verifica file statistici minimi obbligatori generati dal quantifier
+        # Validate mandatory minimal statistical model files produced by quantifier
         required_model_files = [
             damage_model_dir / "misincorporation.txt",
         ]
@@ -144,7 +144,7 @@ class QualityRescaleEngine:
                     "Cannot execute --rescale-only without valid pre-computed damage statistics."
                 )
 
-        # Controllo di compatibilità contig nel BAM di input
+        # Check contig compatibility in input BAM
         try:
             with pysam.AlignmentFile(str(input_bam), "rb") as bam:
                 if expected_contig and expected_contig not in bam.references:
@@ -168,7 +168,7 @@ class QualityRescaleEngine:
         if not rescaled_bam.is_file() or rescaled_bam.stat().st_size == 0:
             raise DamageRescaleError(f"Rescaled BAM missing or empty on disk: {rescaled_bam}")
 
-        # 1. samtools quickcheck
+        # 1. samtools quickcheck validation
         if not cls.check_samtools_quickcheck(rescaled_bam):
             raise DamageRescaleError(f"Rescaled BAM failed 'samtools quickcheck' validation: {rescaled_bam.name}")
 
@@ -187,7 +187,7 @@ class QualityRescaleEngine:
                 in_hdr = in_bam.header.to_dict()
                 out_hdr = out_bam.header.to_dict()
 
-                # Controllo sequenze @SQ
+                # Validate @SQ sequence dictionary
                 in_sq = in_hdr.get("SQ", [])
                 out_sq = out_hdr.get("SQ", [])
                 if in_sq != out_sq:
@@ -196,7 +196,7 @@ class QualityRescaleEngine:
                         f"Input contigs: {len(in_sq)}, Output contigs: {len(out_sq)}"
                     )
 
-                # Controllo Read Groups @RG
+                # Validate Read Groups (@RG)
                 in_rg = in_hdr.get("RG", [])
                 out_rg = out_hdr.get("RG", [])
                 if len(in_rg) != len(out_rg):
@@ -204,13 +204,13 @@ class QualityRescaleEngine:
                         f"Read Groups (@RG) mismatch: Input had {len(in_rg)}, Output has {len(out_rg)}"
                     )
 
-                # Controllo presenza contig atteso
+                # Verify expected contig presence
                 if expected_contig and expected_contig not in out_bam.references:
                     raise DamageRescaleError(
                         f"Target mitochondrial contig '{expected_contig}' missing from rescaled BAM references."
                     )
 
-                # Controllo parità esatta del numero di record
+                # Verify exact read record count parity
                 in_count = in_bam.count(until_eof=True)
                 out_count = out_bam.count(until_eof=True)
                 if in_count != out_count:
@@ -224,7 +224,7 @@ class QualityRescaleEngine:
                 raise
             raise DamageRescaleError(f"Failed during rescaled BAM header/record inspection: {exc}") from exc
 
-        # 4. Verifica indice BAI
+        # 4. Validate BAI index
         if not rescaled_bai.is_file() or rescaled_bai.stat().st_size == 0:
             raise DamageRescaleError(f"Rescaled BAM index (.bai) is missing or empty: {rescaled_bai}")
 
@@ -274,7 +274,7 @@ class QualityRescaleEngine:
             damage_model_dir=damage_model_dir,
         )
 
-        # 1. Controllo Policy: se disabilitato, esce in stato SKIPPED pulito
+        # 1. Policy check: if disabled, exit cleanly in SKIPPED state
         if not policy.enable_rescaling:
             logger.info(f"[{sample_id}] Rescaling is disabled in policy (enable_rescaling=False). Skipping.")
             meta.skipped = True
@@ -286,7 +286,7 @@ class QualityRescaleEngine:
 
         meta.tool_version = cls.get_version()
 
-        # 2. Validazione Pre-condizioni
+        # 2. Validate pre-conditions
         cls.validate_preconditions(
             input_bam=input_bam,
             reference_fasta=reference_fasta,
@@ -315,7 +315,7 @@ class QualityRescaleEngine:
             f"Model Source: {damage_model_dir.name}"
         )
 
-        # 3. Esecuzione Processo
+        # 3. Process execution
         t0 = time.perf_counter()
         try:
             with open(stdout_log, "w", encoding="utf-8") as out_f, open(stderr_log, "w", encoding="utf-8") as err_f:
@@ -330,7 +330,7 @@ class QualityRescaleEngine:
                 f"mapDamage --rescale-only failed with exit code {res.returncode}. Log: {stderr_log}"
             )
 
-        # 4. Individuazione Artefatto Prodotto
+        # 4. Locate produced artifact
         expected_candidates = [
             damage_model_dir / f"{input_bam.stem}.rescaled.bam",
             damage_model_dir / f"{sample_id}.rescaled.bam",
@@ -347,7 +347,7 @@ class QualityRescaleEngine:
                 f"mapDamage finished with exit code 0 but rescaled BAM was not produced in {damage_model_dir}."
             )
 
-        # 5. Spostamento Standardizzato e Generazione Indice BAI
+        # 5. Standardized relocation and BAI index generation
         target_rescaled_bam = out_sample_dir / f"{sample_id}.rescaled.bam"
         target_bai = Path(f"{target_rescaled_bam}.bai")
 
@@ -361,7 +361,7 @@ class QualityRescaleEngine:
         except Exception as exc:
             raise DamageRescaleError(f"Failed to index rescaled BAM: {exc}") from exc
 
-        # 6. Validazione Post-condizioni
+        # 6. Validate post-conditions
         verified_reads = cls.validate_postconditions(
             input_bam=input_bam,
             rescaled_bam=target_rescaled_bam,

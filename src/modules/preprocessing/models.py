@@ -169,18 +169,24 @@ class ToolMetadata:
 
 @dataclass
 class PreprocessingMetrics:
-    """Detailed read counts and merging statistics with rigorous metric separation."""
+    """Detailed read counts, merging statistics, and sequencing quality metrics."""
 
     raw_read_pairs: Optional[int] = None
     raw_total_reads: Optional[int] = None
     surviving_original_reads: Optional[int] = None       # 2 * surviving_pairs + 2 * merged + singletons
     surviving_sequenced_fragments: Optional[int] = None  # surviving_pairs + merged + singletons
-    surviving_read_pairs: Optional[int] = None           # Coppie PE sopravvissute non mergiate
-    merged_fragments: Optional[int] = None               # Coppie collassate con successo
-    singleton_reads: Optional[int] = None                # Reads singole sopravvissute (mate scartato)
-    discarded_reads: Optional[int] = None                # Reads scartate per lunghezza/qualità
+    surviving_read_pairs: Optional[int] = None           # Surviving unmerged PE pairs
+    merged_fragments: Optional[int] = None               # Successfully collapsed pairs
+    singleton_reads: Optional[int] = None                # Surviving single-end reads (discarded mate)
+    discarded_reads: Optional[int] = None                # Discarded reads due to length/quality
     merged_fraction_raw: Optional[float] = None          # merged_fragments / raw_read_pairs
     merged_fraction_surviving: Optional[float] = None    # merged_fragments / (merged_fragments + surviving_read_pairs)
+    adapter_trimmed_reads_pct: Optional[float] = None    # Percentage of reads containing adapters (0.0 - 100.0)
+    q20_rate_post: Optional[float] = None                # Fraction of bases >= Q20 in surviving reads (0.0 - 1.0)
+    q30_rate_post: Optional[float] = None                # Fraction of bases >= Q30 in surviving reads (0.0 - 1.0)
+    gc_content_pct: Optional[float] = None               # GC base percentage in surviving reads (0.0 - 100.0)
+    mean_read_length_pre: Optional[float] = None         # Mean read length before trimming
+    mean_read_length_post: Optional[float] = None        # Mean read length of retained reads
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes metrics to dictionary."""
@@ -195,6 +201,12 @@ class PreprocessingMetrics:
             "discarded_reads": self.discarded_reads,
             "merged_fraction_raw": round(self.merged_fraction_raw, 4) if self.merged_fraction_raw is not None else None,
             "merged_fraction_surviving": round(self.merged_fraction_surviving, 4) if self.merged_fraction_surviving is not None else None,
+            "adapter_trimmed_reads_pct": round(self.adapter_trimmed_reads_pct, 2) if self.adapter_trimmed_reads_pct is not None else None,
+            "q20_rate_post": round(self.q20_rate_post, 4) if self.q20_rate_post is not None else None,
+            "q30_rate_post": round(self.q30_rate_post, 4) if self.q30_rate_post is not None else None,
+            "gc_content_pct": round(self.gc_content_pct, 2) if self.gc_content_pct is not None else None,
+            "mean_read_length_pre": round(self.mean_read_length_pre, 2) if self.mean_read_length_pre is not None else None,
+            "mean_read_length_post": round(self.mean_read_length_post, 2) if self.mean_read_length_post is not None else None,
         }
 
 

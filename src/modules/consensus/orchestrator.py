@@ -354,26 +354,48 @@ class ConsensusOrchestrator:
         # ----------------------------------------------------------------------
         for call in heteroplasmy_calls:
             pos = call.position
+            ref_b = call.reference_base.upper()
 
             if call.variant_type == MutationType.SNV:
-                vcf_ref = call.reference_base.upper()
-                vcf_alt = call.minor_allele.upper()
+                vcf_ref = ref_b
+                # Risoluzione dinamica della polarità per eteroplasmie a frequenza invertita
+                if call.minor_allele.upper() != ref_b:
+                    vcf_alt = call.minor_allele.upper()
+                    af_val = call.alt_vaf
+                    ad_alt = call.alt_reads
+                    ad_ref = call.forward_ref + call.reverse_ref
+                elif call.major_allele.upper() != ref_b:
+                    vcf_alt = call.major_allele.upper()
+                    af_val = round(1.0 - call.alt_vaf, 4) if call.alt_vaf is not None else 0.60
+                    ad_alt = max(0, call.callable_depth - call.alt_reads)
+                    ad_ref = call.alt_reads
+                else:
+                    continue
                 var_type = "HETEROPLASMY_SNV"
+
             elif call.variant_type == MutationType.INS:
                 vcf_ref = call.major_allele.upper()
                 vcf_alt = call.minor_allele.upper()
+                af_val = call.alt_vaf
+                ad_alt = call.alt_reads
+                ad_ref = call.forward_ref + call.reverse_ref
                 var_type = "INS"
+
             elif call.variant_type == MutationType.DEL:
                 vcf_ref = call.major_allele.upper()
                 vcf_alt = call.minor_allele.upper()
+                af_val = call.alt_vaf
+                ad_alt = call.alt_reads
+                ad_ref = call.forward_ref + call.reverse_ref
                 var_type = "DEL"
+
             else:
                 continue
 
             if vcf_ref == vcf_alt:
                 continue
 
-            is_fixed_indel = call.alt_vaf >= self.policy.major_allele_fraction
+            is_fixed_indel = af_val >= self.policy.major_allele_fraction
             if is_fixed_indel:
                 var_type = "MAJOR_CONSENSUS"
 
@@ -389,10 +411,10 @@ class ConsensusOrchestrator:
                 qual=".",
                 filter_status=filter_str,
                 var_type=var_type,
-                af=call.alt_vaf,
+                af=af_val,
                 dp=call.callable_depth,
-                ad_ref=call.forward_ref + call.reverse_ref,
-                ad_alt=call.alt_reads,
+                ad_ref=ad_ref,
+                ad_alt=ad_alt,
                 sb_pv=call.strand_bias_pvalue,
                 spatial_suspect=call.spatial_damage_suspect,
                 slippage_tract=call.slippage_region,
@@ -425,7 +447,6 @@ class ConsensusOrchestrator:
                 if not stream_cands:
                     continue
 
-                # Selezione per estensione di lunghezza in basi (non lessicografica)
                 longest_ref = max((c.ref for c in stream_cands), key=len)
                 norm_alts: List[str] = []
                 for c in stream_cands:
@@ -451,12 +472,10 @@ class ConsensusOrchestrator:
                     f"VARTYPE={vartype_field}",
                 ]
 
-                # Preserva l'allineamento Number=A immettendo '.' se un allele manca di p-value
                 sb_vals = [f"{c.sb_pv:.4e}" if c.sb_pv is not None else "." for c in stream_cands]
                 if any(v != "." for v in sb_vals):
                     info_parts.append(f"SB_PV={','.join(sb_vals)}")
 
-                # Mappa il sospetto spaziale per singolo allele (Number=A, 0 o 1)
                 spatial_flags = ["1" if c.spatial_suspect else "0" for c in stream_cands]
                 if any(c.spatial_suspect for c in stream_cands):
                     info_parts.append(f"SPATIAL_SUSPECT={','.join(spatial_flags)}")
@@ -633,7 +652,12 @@ class ConsensusOrchestrator:
             sample_id=sample_id,
             reference_info=ref_info,
         )
-        consensus_sites, canonical_seq, iupac_seq = consensus_builder.build_consensus(pileup_sites)
+        (
+            consensus_sites,
+            canonical_seq,
+            iupac_seq,
+            indel_aware_seq,
+        ) = consensus_builder.build_consensus(pileup_sites)
 
         if len(canonical_seq) != ref_info.length:
             raise ConsensusExecutionError(
@@ -650,6 +674,7 @@ class ConsensusOrchestrator:
 
         canonical_fasta_path = os.path.join(output_dir, f"{sample_id}.consensus.fasta")
         iupac_fasta_path = os.path.join(output_dir, f"{sample_id}.consensus_iupac.fasta")
+        indel_fasta_path = os.path.join(output_dir, f"{sample_id}.consensus_indel.fasta")
         heteroplasmy_tsv_path = os.path.join(output_dir, f"{sample_id}.heteroplasmy.tsv")
         vcf_path = os.path.join(output_dir, f"{sample_id}.variants.vcf.gz")
         qc_json_path = os.path.join(output_dir, f"{sample_id}.consensus_qc.json")
@@ -661,11 +686,19 @@ class ConsensusOrchestrator:
             sequence=canonical_seq,
         )
 
+        if calibrated_policy.emit_iupac_fasta:
+            consensus_builder.write_fasta(
+                output_path=iupac_fasta_path,
+                header_id=sample_id,
+                description=f"iupac_consensus contig={ref_info.contig} length={ref_info.length}",
+                sequence=iupac_seq,
+            )
+
         consensus_builder.write_fasta(
-            output_path=iupac_fasta_path,
+            output_path=indel_fasta_path,
             header_id=sample_id,
-            description=f"iupac_consensus contig={ref_info.contig} length={ref_info.length}",
-            sequence=iupac_seq,
+            description=f"consensus indel-aware circular contig={ref_info.contig} length={ref_info.length}",
+            sequence=indel_aware_seq,
         )
 
         fasta_sha256 = self.calculate_sha256(canonical_fasta_path)
@@ -686,12 +719,27 @@ class ConsensusOrchestrator:
 
         het_details_map: Dict[str, HeteroplasmySiteDetail] = {}
         for c in heteroplasmy_calls:
+            ref_b = c.reference_base.upper()
+            if c.variant_type == MutationType.SNV:
+                if c.minor_allele.upper() != ref_b:
+                    alt_b = c.minor_allele.upper()
+                    vaf_b = c.alt_vaf
+                elif c.major_allele.upper() != ref_b:
+                    alt_b = c.major_allele.upper()
+                    vaf_b = round(1.0 - c.alt_vaf, 4) if c.alt_vaf is not None else 0.60
+                else:
+                    alt_b = c.minor_allele.upper()
+                    vaf_b = c.alt_vaf
+            else:
+                alt_b = c.minor_allele.upper()
+                vaf_b = c.alt_vaf
+
             het_details_map[str(c.position)] = HeteroplasmySiteDetail(
                 position=c.position,
-                ref=c.reference_base,
-                alt=c.minor_allele,
+                ref=ref_b,
+                alt=alt_b,
                 depth=c.callable_depth,
-                vaf=c.alt_vaf,
+                vaf=vaf_b,
                 internal_support_count=c.internal_support_count,
                 terminal_support_count=c.terminal_support_count,
                 spatial_damage_suspect=c.spatial_damage_suspect,

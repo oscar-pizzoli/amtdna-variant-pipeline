@@ -1,260 +1,355 @@
 # ==============================================================================
 # PIPELINE CONFIGURATION: ANCIENT & MODERN mtDNA CONSENSUS & AUTHENTICATION
+# Pipeline Version: 1.2.0 (Block 1 through Block 8 Full Architecture)
+# ==============================================================================
+
+
+# ==============================================================================
+# SECTION 0: GLOBAL SETTINGS & SYSTEM RESOURCES
 # ==============================================================================
 
 project:
-  name: "ancient-modern-mtdna-pipeline"
-  version: "1.0.0"
-  description: "End-to-end pipeline for ancient and modern mtDNA consensus, damage authentication and haplogrouping"
+  name: "ancient-modern-mtdna-pipeline"  # Project identifier used in manifests and logs
+  version: "1.2.0"                       # Pipeline release version for lineage tracking
+  description: "End-to-end pipeline for ancient and modern mtDNA consensus, damage authentication, and haplogrouping"
 
 resources:
-  threads: 8
-  max_memory_gb: 16
-  cpu_budget_fraction: 0.50
-  host_cores_override: null
+  threads: 8                   # Maximum total CPU threads allocated across pipeline stages
+  max_memory_gb: 16            # Peak RAM limit in gigabytes before triggering disk spill
+  cpu_budget_fraction: 0.50    # Fraction of available host CPUs allowed for parallel sub-processes
+  host_cores_override: null    # Manual CPU core override (null = autodetect from host system)
+
+output:
+  results_dir: "results"                     # Final sanitized deliverable directory for end users
+  operational_files_dir: "operational_files" # Intermediate operational working directory for tools and contracts
+  save_intermediate_bams: false              # If true, keeps non-deduplicated and non-rescaled intermediate BAMs
+  compress_outputs: true                     # Apply bgzip/gzip compression to final deliverable files
+
+
+# ==============================================================================
+# BLOCK 1: INPUT DATA & REFERENCE SPECIFICATION
+# ==============================================================================
 
 input:
-  data_type: "FASTQ"
-  input_dir: "data/raw_fastq"
-  pattern_r1: "*.fastq.gz"
-  pattern_r2: ""
-  single_end: true
-  allow_missing_mates: false
+  data_type: "FASTQ"             # Raw sequence format: 'FASTQ' or 'BAM'
+  input_dir: "data/raw_fastq"    # Directory scanned for incoming sequence files
+  layout: "AUTO"                 # Layout mode: 'AUTO' (sample-by-sample detection), 'PAIRED', or 'SINGLE'
+  pairing_patterns:
+    r1: ["_R1", "_1", ".R1", ".1"] # Recognized forward / mate 1 filename indicators
+    r2: ["_R2", "_2", ".R2", ".2"] # Recognized reverse / mate 2 filename indicators
+  allowed_extensions:            # Recognized sequence archive extensions
+    - ".fastq.gz"
+    - ".fq.gz"
+    - ".fastq"
+    - ".fq"
+  allow_missing_mates: false     # Fail-closed policy: reject sample if an expected mate file is missing
 
 integrity:
-  mode: "fast"
+  mode: "fast"                   # Input verification mode: 'fast' (file size + header) or 'strict' (full SHA-256)
 
 reference:
-  fasta_path: "data/reference/rCRS.fasta"
-  expected_contig: "NC_012920.1"
-  strict_contig: true
-  expected_length: 16569
-  expected_sequence_md5: null
-  is_circular: true
-  allow_n: true
-  auto_index: true
+  fasta_path: "data/reference/rCRS.fasta"  # Physical path to the rCRS mitochondrial reference FASTA
+  expected_contig: "NC_012920.1"          # Expected mitochondrial chromosome ID (RefSeq rCRS)
+  strict_contig: true                     # Enforce contig ID exact match; fail if BAM/VCF contig differs
+  expected_length: 16569                  # Canonical reference length in base pairs (rCRS = 16,569 bp)
+  expected_sequence_md5: null             # Reference MD5 digest for cryptographic verification (null = skip)
+  is_circular: true                       # Flag enabling circular coordinate handling across 16569 -> 1
+  allow_n: true                           # Allow IUPAC placeholder 'N' (specifically at position 3107 in rCRS)
+  auto_index: true                        # Automatically generate .fai and BWA index files if missing
+
+
+# ==============================================================================
+# BLOCK 2: PREPROCESSING (ADAPTER TRIMMING & MERGING)
+# ==============================================================================
 
 preprocessing:
-  tool: "AdapterRemoval"
-  min_read_length: 30
-  min_merge_overlap: 11
-  collapse_reads: true
-  trim_ns: true
+  tool: "AdapterRemoval"         # Trimming engine: 'AdapterRemoval' or 'fastp'
+  min_read_length: 30            # Minimum fragment length retained post-trimming (aDNA standard = 30 bp)
+  min_merge_overlap: 11          # Minimum base overlap required to merge paired-end read pairs
+  collapse_reads: true           # Merge overlapping paired-end reads into high-confidence single fragments
+  trim_ns: true                  # Trim ambiguous 'N' bases from read terminal 5' and 3' ends
+
+
+# ==============================================================================
+# BLOCK 3: ALIGNMENT, DEDUPLICATION & COVERAGE FILTERING
+# ==============================================================================
 
 alignment:
-  aligner: "bwa-aln"
-  threads: 4
-  parallel_aln: true
-  keep_temporary_sai: false
-  keep_raw_merged_bam: true
-  cleanup_on_failure: true
+  aligner: "bwa-aln"             # Alignment algorithm: 'bwa-aln' (specialized for short damaged aDNA)
+  threads: 4                     # Dedicated threads for alignment processes
+  parallel_aln: true             # Run parallel indexing and alignment jobs
+  keep_temporary_sai: false      # Remove intermediate BWA .sai files after SAM/BAM generation
+  keep_raw_merged_bam: true      # Preserve aligned BAM prior to duplicate removal for audit trails
+  cleanup_on_failure: true       # Delete partial/corrupted output files if alignment crashes
 
   bwa_aln:
-    seed_length: 1000
-    max_diff: 0.01
-    max_gap_opens: 2
-    max_gap_extensions: -1
-    trim_quality_threshold: 0
+    seed_length: 1000            # Disables seeding (-l 1000), allowing deaminations anywhere in read
+    max_diff: 0.01               # Maximum edit distance (-n 0.01: stringency calibrated for ancient DNA)
+    max_gap_opens: 2             # Maximum allowed gap open operations (-o 2)
+    max_gap_extensions: -1       # Gap extensions (-1 = default BWA penalty scheme)
+    trim_quality_threshold: 0    # Phred trimming threshold (-q 0: quality trimming disabled to avoid bias)
 
   read_group:
-    platform: "ILLUMINA"
-    center: "LAB"
+    platform: "ILLUMINA"         # Sequencing platform identifier written to BAM header (@RG:PL)
+    center: "LAB"                # Sequencing center or facility name (@RG:CN)
 
 deduplication:
-  mode: "both"
-  use_csi: false
-  threads: 4
+  mode: "both"                   # PCR duplicate removal mode: 'both' coordinates, '5_prime', or 'optical'
+  use_csi: false                 # Index format: false = standard .bai, true = .csi index
+  threads: 4                     # Threads allocated for sorting and mark-duplicate operations
 
 filtering:
-  fast_mode: false
+  fast_mode: false               # Bypass non-essential QC checks if true (keep false for production)
   multimapping:
-    min_mapq: 30
-    filter_unmapped: true
-    filter_secondary: true
-    filter_supplementary: true
-    inspect_mapper_tags: false
+    min_mapq: 30                 # Minimum Mapping Quality threshold (MAPQ >= 30 ensures unique placement)
+    filter_unmapped: true        # Exclude unmapped reads from working BAM
+    filter_secondary: true       # Remove secondary alignments (flag 0x100)
+    filter_supplementary: true   # Remove chimeric/supplementary alignments (flag 0x800)
+    inspect_mapper_tags: false   # Parse aligner-specific multi-mapping tags (XT:A:U, XA:Z)
 
   thresholds:
-    min_breadth_3x_fraction: 0.80
-    max_duplication_rate_fraction: 0.85
-    min_mean_depth: 3.0
+    min_breadth_3x_fraction: 0.80       # Gate: Minimum 80% of genome covered by >= 3 reads
+    max_duplication_rate_fraction: 0.85 # Alert: Flag sample if duplicate reads exceed 85%
+    min_mean_depth: 3.0                 # Gate: Hard minimum mean coverage depth required to continue
+
+
+# ==============================================================================
+# BLOCK 4: aDNA DAMAGE ASSESSMENT & QUALITY RESCALING
+# ==============================================================================
 
 damage:
-  policy_id: "adna_standard_v1"
-  input_bam_type: "FILTERED_DEDUP"
-  allow_input_bam_fallback: false
-  library_treatment: "NONE"
+  policy_id: "adna_standard_v1"       # Policy version tracking damage model parameters
+  input_bam_type: "FILTERED_DEDUP"    # BAM input stream: 'FILTERED_DEDUP' or 'RAW_MERGED'
+  allow_input_bam_fallback: false     # Prevent silent fallback to uncleaned BAM if dedup BAM is missing
+  library_treatment: "NONE"           # Library chemical prep: 'NONE' (Non-UDG), 'HALF' (UDG-half), 'FULL' (UDG-full)
 
   execution:
-    terminal_positions_to_profile: 25
-    threads: 4
+    terminal_positions_to_profile: 25 # Number of terminal base positions analyzed for deamination
+    threads: 4                        # Threads dedicated to mapDamage2 execution
 
     rescaling:
-      enabled: true
+      enabled: true                   # Enable mapDamage Bayesian quality score downscaling for post-mortem damage
 
     pmd:
-      enabled: true
-      filtering_enabled: false
-      threshold: 3.0
-      require_pmd_success: false
+      enabled: true                   # Calculate PMDtools individual read degradation scores
+      filtering_enabled: false        # Hard-filter reads by PMD score (false = retain and downweight)
+      threshold: 3.0                  # PMD score threshold classifying an individual read as authentic aDNA
+      require_pmd_success: false      # If true, pipeline halts if PMDtools fails
 
   thresholds:
     sampling_power:
-      min_c_to_t_5p_observations: 50
-      min_g_to_a_3p_observations: 50
-      min_reads_for_damage_model: 100
+      min_c_to_t_5p_observations: 50  # Minimum 5'-terminal C>T observations to fit statistical model
+      min_g_to_a_3p_observations: 50  # Minimum 3'-terminal G>A observations to fit statistical model
+      min_reads_for_damage_model: 100 # Minimum aligned reads required to run Bayesian damage modeling
 
     terminal_deamination:
-      min_c_to_t_5p_strong: 0.10
-      min_g_to_a_3p_strong: 0.10
-      min_c_to_t_5p_moderate: 0.03
-      min_g_to_a_3p_moderate: 0.03
-      terminal_asymmetry_max_diff: 0.15
+      min_c_to_t_5p_strong: 0.10      # Strong authenticity signal: >= 10% 5'-C>T transition at position 1
+      min_g_to_a_3p_strong: 0.10      # Strong authenticity signal: >= 10% 3'-G>A transition at position 1
+      min_c_to_t_5p_moderate: 0.03    # Moderate authenticity signal: >= 3% 5'-C>T transition at position 1
+      min_g_to_a_3p_moderate: 0.03    # Moderate authenticity signal: >= 3% 3'-G>A transition at position 1
+      terminal_asymmetry_max_diff: 0.15 # Maximum allowed divergence between 5'-C>T and 3'-G>A frequencies
 
     fragmentation:
-      max_median_length_bp: 80
+      max_median_length_bp: 80        # Ancient DNA fragmentation ceiling (typical authentic aDNA is 40-75 bp)
 
     bayesian_model:
-      delta_s_strong: 0.20
-      delta_s_moderate: 0.05
+      delta_s_strong: 0.20            # mapDamage single-stranded terminal damage parameter delta_s strong threshold
+      delta_s_moderate: 0.05          # mapDamage delta_s moderate evidence threshold
 
     pmd_corroboration:
-      min_fraction_ge_3: 0.10
+      min_fraction_ge_3: 0.10         # Minimum fraction of reads with PMD score >= 3 to support authenticity
 
     udg_diagnostics:
-      partial_max_pos2_to_pos1_ratio: 0.70
-      partial_min_pos2_damage_floor: 0.03
+      partial_max_pos2_to_pos1_ratio: 0.70  # UDG-half characteristic: damage drop-off between pos 2 and pos 1
+      partial_min_pos2_damage_floor: 0.03   # Residual damage floor at position 2 in partial UDG libraries
+
+
+# ==============================================================================
+# BLOCK 5: EXOGENOUS CONTAMINATION SCREENING & ESTIMATION
+# ==============================================================================
 
 contamination:
-  enabled: true
-  method: "SCHMUTZI"
-  allow_fallback_to_dissent: false
+  enabled: true                       # Enable contamination estimation framework
+  method: "SCHMUTZI"                  # Primary estimation engine: 'SCHMUTZI'
+  allow_fallback_to_dissent: false    # If true, falls back to internal allele dissent caller if Schmutzi fails
 
   fast_screening:
-    enabled: true
+    enabled: true                     # Pre-screen samples against diagnostic Phylotree sites prior to Schmutzi
     algorithm_version: "fast-screen-v2.0"
-    diagnostic_panel_path: "data/reference/diagnostic_sites_phylotree17.tsv"
+    diagnostic_panel_path: "data/reference/diagnostic_sites_phylotree17.tsv" # Reference panel of diagnostic loci
     diagnostic_panel_version: "phylotree17_v1"
-    escalate_dissenting_sites_min: 3
-    escalate_vaf_threshold: 0.02
-    min_alt_reads_per_site: 2
-    min_depth_for_screen: 10.0
-    min_genome_depth: 10.0
-    min_evaluated_sites: 50
-    min_panel_evaluation_fraction: 0.25
-    min_base_quality: 30
-    min_mapping_quality: 30
-    min_depth_per_site: 10
-    noise_vaf_floor: 0.015
-    cache_screen_results: true
+    escalate_dissenting_sites_min: 3  # Escalation threshold: minimum discordant sites triggering full Schmutzi
+    escalate_vaf_threshold: 0.02      # Minor allele frequency threshold defining a dissenting site (2%)
+    min_alt_reads_per_site: 2         # Minimum alternative read support to consider an allele non-stochastic
+    min_depth_for_screen: 10.0        # Callable site depth required for diagnostic evaluation
+    min_genome_depth: 10.0            # Overall sample mean depth required to perform fast pre-screening
+    min_evaluated_sites: 50           # Minimum diagnostic panel sites covered to declare a valid screen
+    min_panel_evaluation_fraction: 0.25 # Fraction of total panel sites covered (>= 25%)
+    min_base_quality: 30              # Base quality filter during screening pileup extraction
+    min_mapping_quality: 30           # Mapping quality filter during screening pileup extraction
+    min_depth_per_site: 10            # Local site depth minimum
+    noise_vaf_floor: 0.015            # Stochastic background noise floor (1.5% VAF)
+    cache_screen_results: true        # Cache screen intermediate results to disk
     cache_mode: "strict"
 
     panel_builder:
-      min_maf: 0.02
-      min_total_observations: 10.0
-      min_panel_size: 10
+      min_maf: 0.02                   # Minor allele frequency cutoff for custom panel creation
+      min_total_observations: 10.0    # Minimum total observation depth across clade references
+      min_panel_size: 10              # Minimum diagnostic sites required to compile a sub-panel
 
   subsampling:
-    enabled: true
-    target_depth: 40.0
-    seed: 42
-    min_depth_threshold: 42.0
+    enabled: true                     # Subsample high-depth BAMs to prevent memory overflow and artifact inflation
+    target_depth: 40.0                # Target coverage depth for subsampling (Schmutzi works optimally at ~40x)
+    seed: 42                          # Deterministic pseudorandom seed for read subsampling reproducibility
+    min_depth_threshold: 42.0         # Only trigger subsampling if mean sample depth exceeds this threshold
 
   schmutzi:
-    database_path: "data/reference/schmutzi_db/197"
-    threads: 2
-    max_iterations: 10
-    library_treatment: "NONE"
-    use_wrapped_reference: false
-    use_container: "auto"
+    database_path: "data/reference/schmutzi_db/197" # Path to allele frequency database of potential contaminants
+    threads: 6                        # Dedicated threads for iterative Bayesian decontamination
+    max_iterations: 10                # Maximum EM optimization cycles
+    library_treatment: "NONE"         # Informs Schmutzi of library chemistry ('NONE', 'HALF', 'FULL')
+    use_wrapped_reference: false      # Circular genome wrapping (false = linear reference rCRS)
+    use_container: "auto"             # Execution engine: 'auto', 'docker', 'singularity', or 'conda'
     container_engine: "docker"
     container_image: "quay.io/biocontainers/schmutzi:1.5.6--h9a82719_1"
 
   dissent:
-    min_base_quality: 30
-    min_mapping_quality: 30
-    min_depth_per_site: 10
-    noise_vaf_floor: 0.015
-    base_min_dissenting_sites: 3
-    dissent_high_confidence_min_sites: 50
+    min_base_quality: 30              # Minimum Phred base quality for internal dissent caller
+    min_mapping_quality: 30           # Minimum MAPQ for internal dissent caller
+    min_depth_per_site: 10            # Local minimum depth for assessing allelic dissent
+    noise_vaf_floor: 0.015            # Dissent caller background noise floor
+    base_min_dissenting_sites: 3      # Minimum dissenting positions required to flag contamination
+    dissent_high_confidence_min_sites: 50 # Informative site count required for high confidence verdict
 
   thresholds:
-    low_threshold: 0.02
-    moderate_threshold: 0.05
-    elevated_threshold: 0.10
-    min_coverage_for_estimation: 5.0
-    recommended_coverage: 10.0
-    high_confidence_max_ci_width: 0.04
-    moderate_confidence_max_ci_width: 0.08
-    min_informative_sites: 10
-    pmd_filtering_threshold: 3.0
+    low_threshold: 0.02               # <= 2% contamination: Clean sample, standard calling approved
+    moderate_threshold: 0.05          # 2% - 5%: Moderate contamination, restrict heteroplasmy calling
+    elevated_threshold: 0.10          # 5% - 10%: Elevated contamination, require PMD filtering or reject
+    min_coverage_for_estimation: 5.0  # Absolute minimum coverage required to run Schmutzi
+    recommended_coverage: 10.0        # Recommended coverage for robust Bayesian posterior convergence
+    high_confidence_max_ci_width: 0.04    # CI width <= 4% indicates high-confidence estimation
+    moderate_confidence_max_ci_width: 0.08 # CI width <= 8% indicates moderate-confidence estimation
+    min_informative_sites: 10         # Minimum diagnostic sites required to accept Schmutzi verdict
+    pmd_filtering_threshold: 3.0      # PMD threshold applied when decontamination filtering is triggered
+
+
+# ==============================================================================
+# BLOCK 6: CONSENSUS CALLING & HETEROPLASMY AUDITING
+# ==============================================================================
 
 consensus:
-  policy_id: "consensus_strict_v1"
-  policy_version: "1.0.0"
+  policy_id: "consensus_strict_v1"    # Consensus policy identifier
+  policy_version: "1.0.0"             # Policy specification version
 
-  min_base_quality: 30
-  min_mapping_quality: 30
+  min_base_quality: 30                # Phred base quality floor (Q >= 30: 99.9% base calling accuracy)
+  min_mapping_quality: 30             # Mapping quality floor (MAPQ >= 30: uniquely aligned reads)
 
-  min_consensus_depth: 10
-  major_allele_fraction: 0.80
-  ambiguity_min_vaf: 0.10
-  emit_iupac_fasta: true
-  emit_subconsensus_vcf: true     # <-- Parametro introdotto per il doppio VCF (Operativo + Sub-consenso)
-  mask_char: "N"
+  min_consensus_depth: 10             # Minimum callable depth required to call a consensus base; else masked to 'N'
+  major_allele_fraction: 0.80         # Fraction threshold (>= 80%): base is fixed into canonical consensus FASTA
+  ambiguity_min_vaf: 0.10             # Fraction threshold (>= 10%): sub-threshold variant triggers IUPAC in IUPAC FASTA
+  emit_iupac_fasta: true              # Emit {sample}.consensus_iupac.fasta with degenerate IUPAC ambiguity codes
+  emit_subconsensus_vcf: true         # Emit secondary {sample}.subconsensus.vcf.gz for low-level damage/slippage audit
+  mask_char: "N"                      # Mask character for low-coverage or unresolved coordinates
 
   heteroplasmy:
-    enabled: true
-    min_depth: 15
-    min_alt_reads: 3
-    min_vaf: 0.10
-    max_vaf: 0.80
-    strand_bias_alpha: 0.05
-    strand_bias_min_strand_reads: 1
+    enabled: true                     # Enable heteroplasmy and sub-threshold variant calling
+    min_depth: 15                     # Minimum callable depth required at locus to evaluate heteroplasmy
+    min_alt_reads: 3                  # Minimum non-reference read support required for candidate validation
+    min_vaf: 0.10                     # Minimum Variant Allele Fraction (VAF >= 10%) to call true heteroplasmy
+    max_vaf: 0.80                     # Upper VAF limit (variants > 80% transition to fixed major consensus)
+    strand_bias_alpha: 0.05           # Significance threshold for Fisher exact test strand bias rejection
+    strand_bias_min_strand_reads: 1   # Minimum alternative reads required on both forward and reverse strands
 
-    # Spatial Damage Authentication Thresholds
-    min_internal_fragments: 2
-    spatial_thresholds:
-      NON_UDG: 5
-      UDG_HALF: 2
-      UDG_FULL: 0
+    # Spatial Damage Authentication Thresholds (End-Distance Filters)
+    min_internal_fragments: 2         # Minimum reads with variant located internally (> spatial threshold from read ends)
+    spatial_thresholds:               # Terminal distance (bp) excluded to eliminate post-mortem deaminations
+      NON_UDG: 5                      # Non-UDG treated libraries: filter mutations within terminal 5 bp
+      UDG_HALF: 2                     # UDG-half libraries: filter mutations within terminal 2 bp
+      UDG_FULL: 0                     # UDG-full libraries: zero end-distance penalty (damage enzymatically removed)
 
-  restricted_heteroplasmy:
-    min_depth: 20
-    min_alt_reads: 5
-    min_vaf: 0.25
-    max_vaf: 0.75
+  restricted_heteroplasmy:            # Gated thresholds applied when sample exhibits moderate contamination
+    min_depth: 20                     # Elevated depth requirement
+    min_alt_reads: 5                  # Elevated alternative read count
+    min_vaf: 0.25                     # Elevated VAF threshold (25% floor suppresses exogenous contamination)
+    max_vaf: 0.75                     # Compressed upper VAF bound
 
   regions:
-    hvs1_start: 16024
-    hvs1_end: 16383
-    hvs2_start: 73
-    hvs2_end: 340
+    hvs1_start: 16024                 # Hypervariable Region I start coordinate (rCRS)
+    hvs1_end: 16383                   # Hypervariable Region I end coordinate (rCRS)
+    hvs2_start: 73                    # Hypervariable Region II start coordinate (rCRS)
+    hvs2_end: 340                     # Hypervariable Region II end coordinate (rCRS)
+
+
+# ==============================================================================
+# BLOCK 7: PHYLOGENETIC PLACEMENT & CROSS-BLOCK LINEAGE AUDIT
+# ==============================================================================
 
 haplogroup:
-  tool: "haplogrep3"
-  tree_id: "phylotree-fu-rcrs"
-  tree_version: "1.2"
-  metric: "KULCZYNSKI"
-  min_quality_score: 0.80
-  cross_check_vcf: true
-  timeout_seconds: 300
-  retain_raw_output: true
+  tool: "haplogrep3"                  # Clade classification engine: 'haplogrep3'
+  tree_id: "phylotree-fu-rcrs"        # Reference phylogenetic tree database
+  tree_version: "1.2"                 # Phylotree 17 version tag
+  metric: "KULCZYNSKI"                # Distance metric for haplogroup assignment ('KULCZYNSKI' standard)
+  min_quality_score: 0.80             # Minimum assignment score (0.0 - 1.0) required for confident call
+  cross_check_vcf: true               # Dual-stream check: classify both consensus FASTA and VCF simultaneously
+  timeout_seconds: 300                # Maximum execution time allowed for HaploGrep3 process
+  retain_raw_output: true             # Retain full raw HaploGrep extended report text file
 
 validation:
-  sequence_type: "CANONICAL"
-  max_n_percentage: 15.0
+  sequence_type: "CANONICAL"          # Sequence validated: 'CANONICAL' (fixed bases)
+  max_n_percentage: 15.0              # Maximum tolerated percentage of 'N' bases (15%) before failing sample
 
 cross_block_audit:
-  min_quality_score: 0.80
-  max_missing_diagnostic_mutations: 2
-  max_private_mutations: 5
-  contam_affinity_threshold: 0.015
-  subclade_contam_max_fraction: 0.03
-  evaluate_contaminant_closeness: true
-  flag_damage_in_private_mutations: true
+  min_quality_score: 0.80             # Quality score floor for cross-block concordance
+  max_missing_diagnostic_mutations: 2 # Maximum allowed missing diagnostic mutations before warning
+  max_private_mutations: 5            # Private mutation threshold triggering excess polymorphism warning
+  contam_affinity_threshold: 0.015    # Contaminant affinity threshold: checks if private mutations match contaminant
+  subclade_contam_max_fraction: 0.03  # Tolerated VAF fraction for putative contaminant sub-clade calls
+  evaluate_contaminant_closeness: true # Audit phylogenetic distance between primary and contaminant haplogroups
+  flag_damage_in_private_mutations: true # Cross-check private mutations against spatial end-deamination models
 
-output:
-  results_dir: "results"
-  save_intermediate_bams: false
-  compress_outputs: true
+
+# ==============================================================================
+# BLOCK 8: COHORT SYNTHESIS, PROVENANCE & FORENSIC REPORTING
+# ==============================================================================
+
+synthesis:
+  policy_id: "synthesis_forensic_v1"  # Block 8 reporting policy version
+  version: "1.2.0"                    # Synthesis release version
+
+  reports_dir: "results/master_summary" # Primary directory for master cohort summary deliverables
+  min_vaf_reportable: 0.10            # Biological noise gate: minimum VAF (10%) for unlinked private mutations
+  enforce_strict_provenance: true     # If true, blocks delivery of critical files lacking sealed VERIFIED status
+
+  deliverables:
+    emit_tsv_summary: true            # Export single-sample 48-column summary TSV ({sample}.summary.tsv)
+    emit_mutations_catalog: true      # Export tidy tabular mutation catalog ({sample}.mutation_catalog.tsv)
+    emit_json_master: true            # Export complete structured master record ({sample}.master.json)
+    emit_markdown_sheets: true        # Render human-readable forensic Markdown report ({sample}.report.md)
+    emit_cohort_fasta: true           # Concatenate cohort-wide multi-FASTA (canonical and IUPAC files)
+    emit_cohort_qc_summary: true      # Compile master 48-column cohort summary table (cohort_qc_summary.tsv)
+    emit_cohort_mutations: true       # Compile unified tidy mutation catalog for whole project
+
+  # Coordinate definitions for mitochondrial functional complexes (1-based, rCRS NC_012920.1)
+  macro_complexes:
+    dloop:                            # Control Region / Displacement Loop
+      intervals: [[16024, 16569], [1, 576]]
+      length_bp: 1122
+    rrna:                             # Small (12S) and Large (16S) Ribosomal RNA
+      intervals: [[648, 1601], [1671, 3229]]
+      length_bp: 2513
+    cox:                              # Cytochrome c Oxidase Subunits (Complex IV: COX1, COX2, COX3)
+      intervals: [[5904, 7445], [7586, 8269], [9207, 9990]]
+      length_bp: 3010
+    nd:                               # NADH Dehydrogenase Subunits (Complex I: ND1, ND2, ND3, ND4L, ND4, ND5, ND6)
+      intervals:
+        - [3307, 4262]                # ND1
+        - [4470, 5511]                # ND2
+        - [10059, 10404]              # ND3
+        - [10470, 10766]              # ND4L
+        - [10760, 12137]              # ND4
+        - [12337, 14148]              # ND5
+        - [14149, 14673]              # ND6
+      length_bp: 6339
+    cyb:                              # Cytochrome b (Complex III)
+      intervals: [[14747, 15887]]
+      length_bp: 1141

@@ -124,6 +124,28 @@ class TerminalDamageFrequencies:
             "g_to_a_3p_denominators": self.g_to_a_3p_denominators,
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TerminalDamageFrequencies":
+        """Reconstructs TerminalDamageFrequencies instance from dictionary."""
+        return cls(
+            c_to_t_5p_pos1=float(data.get("c_to_t_5p_pos1_fraction", data.get("c_to_t_5p_pos1", 0.0))),
+            c_to_t_5p_pos2=float(data.get("c_to_t_5p_pos2_fraction", data.get("c_to_t_5p_pos2", 0.0))),
+            c_to_t_5p_profile=[float(x) for x in data.get("c_to_t_5p_profile", [])],
+            max_5p_c_to_t=float(data.get("max_5p_c_to_t_fraction", data.get("max_5p_c_to_t", 0.0))),
+            g_to_a_3p_pos1=float(data.get("g_to_a_3p_pos1_fraction", data.get("g_to_a_3p_pos1", 0.0))),
+            g_to_a_3p_pos2=float(data.get("g_to_a_3p_pos2_fraction", data.get("g_to_a_3p_pos2", 0.0))),
+            g_to_a_3p_profile=[float(x) for x in data.get("g_to_a_3p_profile", [])],
+            max_3p_g_to_a=float(data.get("max_3p_g_to_a_fraction", data.get("max_3p_g_to_a", 0.0))),
+            n_c_to_t_5p_pos1_obs=int(data.get("n_c_to_t_5p_pos1_obs", 0)),
+            n_c_ref_5p_pos1_total=int(data.get("n_c_ref_5p_pos1_total", 0)),
+            n_g_to_a_3p_pos1_obs=int(data.get("n_g_to_a_3p_pos1_obs", 0)),
+            n_g_ref_3p_pos1_total=int(data.get("n_g_ref_3p_pos1_total", 0)),
+            c_to_t_5p_observations=[int(x) for x in data.get("c_to_t_5p_observations", [])],
+            c_to_t_5p_denominators=[int(x) for x in data.get("c_to_t_5p_denominators", [])],
+            g_to_a_3p_observations=[int(x) for x in data.get("g_to_a_3p_observations", [])],
+            g_to_a_3p_denominators=[int(x) for x in data.get("g_to_a_3p_denominators", [])],
+        )
+
 
 @dataclass
 class FragmentLengthMetrics:
@@ -151,6 +173,20 @@ class FragmentLengthMetrics:
             "max_length_bp": self.max_length,
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FragmentLengthMetrics":
+        """Reconstructs FragmentLengthMetrics instance from dictionary."""
+        return cls(
+            total_fragments_sampled=int(data.get("total_fragments_sampled", 0)),
+            mean_length=float(data.get("mean_length_bp", data.get("mean_length", 0.0))),
+            median_length=float(data.get("median_length_bp", data.get("median_length", 0.0))),
+            p25_length=float(data.get("p25_length_bp", data.get("p25_length", 0.0))),
+            p75_length=float(data.get("p75_length_bp", data.get("p75_length", 0.0))),
+            p90_length=float(data.get("p90_length_bp", data.get("p90_length", 0.0))),
+            min_length=int(data.get("min_length_bp", data.get("min_length", 0))),
+            max_length=int(data.get("max_length_bp", data.get("max_length", 0))),
+        )
+
 
 @dataclass
 class BayesianDamageParameters:
@@ -175,6 +211,19 @@ class BayesianDamageParameters:
             "model_converged": self.model_converged,
             "iterations": self.iterations,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BayesianDamageParameters":
+        """Reconstructs BayesianDamageParameters instance from dictionary."""
+        return cls(
+            lambda_param=data.get("lambda"),
+            delta_s=data.get("delta_s"),
+            delta_d=data.get("delta_d"),
+            theta=data.get("theta"),
+            model_log_likelihood=data.get("model_log_likelihood"),
+            model_converged=bool(data.get("model_converged", False)),
+            iterations=int(data.get("iterations", 0)),
+        )
 
 
 @dataclass
@@ -211,6 +260,24 @@ class PMDMetrics:
             "reads_retained_post_pmd_filter": self.reads_retained_post_pmd_filter,
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PMDMetrics":
+        """Reconstructs PMDMetrics instance from dictionary."""
+        return cls(
+            total_reads_scored=int(data.get("total_reads_scored", 0)),
+            min_pmd_score=float(data.get("min_pmd_score", 0.0)),
+            max_pmd_score=float(data.get("max_pmd_score", 0.0)),
+            mean_pmd_score=float(data.get("mean_pmd_score", 0.0)),
+            median_pmd_score=float(data.get("median_pmd_score", 0.0)),
+            p75_pmd_score=float(data.get("p75_pmd_score", 0.0)),
+            p90_pmd_score=float(data.get("p90_pmd_score", 0.0)),
+            fraction_pmd_ge_0=float(data.get("fraction_pmd_ge_0", 0.0)),
+            fraction_pmd_ge_3=float(data.get("fraction_pmd_ge_3", 0.0)),
+            fraction_pmd_ge_5=float(data.get("fraction_pmd_ge_5", 0.0)),
+            applied_threshold=data.get("applied_threshold"),
+            reads_retained_post_pmd_filter=data.get("reads_retained_post_pmd_filter"),
+        )
+
 
 @dataclass
 class DamageOutputFiles:
@@ -239,6 +306,24 @@ class DamageOutputFiles:
             "pmd_filtered_bai": str(self.pmd_filtered_bai) if self.pmd_filtered_bai else None,
             "damage_model_json": str(self.damage_model_json) if self.damage_model_json else None,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DamageOutputFiles":
+        """Reconstructs DamageOutputFiles instance from dictionary."""
+        def _to_path(v: Any) -> Optional[Path]:
+            return Path(v) if v else None
+
+        return cls(
+            misincorporation_txt=_to_path(data.get("misincorporation_txt")),
+            length_distribution_txt=_to_path(data.get("length_distribution_txt")),
+            damage_plot_pdf=_to_path(data.get("damage_plot_pdf")),
+            rescaled_bam=_to_path(data.get("rescaled_bam")),
+            rescaled_bai=_to_path(data.get("rescaled_bai")),
+            pmd_scores_tsv=_to_path(data.get("pmd_scores_tsv")),
+            pmd_filtered_bam=_to_path(data.get("pmd_filtered_bam")),
+            pmd_filtered_bai=_to_path(data.get("pmd_filtered_bai")),
+            damage_model_json=_to_path(data.get("damage_model_json")),
+        )
 
 
 @dataclass
@@ -299,6 +384,45 @@ class DamagePolicy:
             "terminal_asymmetry_max_difference": self.terminal_asymmetry_max_difference,
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DamagePolicy":
+        """Reconstructs DamagePolicy instance from dictionary."""
+        pol = cls()
+        if "input_bam_type" in data:
+            try:
+                pol.input_bam_type = DamageInputBAMType(data["input_bam_type"])
+            except ValueError:
+                pass
+        if "library_treatment" in data:
+            try:
+                pol.library_treatment = LibraryTreatment(data["library_treatment"])
+            except ValueError:
+                pass
+        for fld in (
+            "enable_rescaling",
+            "enable_pmd_scoring",
+            "enable_pmd_filtering",
+            "pmd_threshold",
+            "min_c_to_t_5p_strong_threshold",
+            "min_g_to_a_3p_strong_threshold",
+            "min_c_to_t_5p_moderate_threshold",
+            "min_g_to_a_3p_moderate_threshold",
+            "min_c_to_t_5p_observations",
+            "min_g_to_a_3p_observations",
+            "max_median_length_threshold_bp",
+            "min_reads_for_damage_model",
+            "terminal_positions_to_profile",
+            "bayesian_delta_s_strong_threshold",
+            "bayesian_delta_s_moderate_threshold",
+            "pmd_corroboration_fraction_ge_3",
+            "udg_partial_max_pos2_to_pos1_ratio",
+            "udg_partial_min_pos2_damage_floor",
+            "terminal_asymmetry_max_difference",
+        ):
+            if fld in data:
+                setattr(pol, fld, data[fld])
+        return pol
+
 
 @dataclass
 class DamageModelProfile:
@@ -333,6 +457,55 @@ class DamageModelProfile:
             "authentication_verdict": self.authentication_verdict.value,
             "rescaling_applied": self.rescaling_applied,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DamageModelProfile":
+        """Reconstructs DamageModelProfile instance from dictionary."""
+        s_id = data.get("sample_id", "")
+        bam_type_val = data.get("input_bam_type", "FILTERED_DEDUP")
+        try:
+            bam_type = DamageInputBAMType(bam_type_val)
+        except ValueError:
+            bam_type = DamageInputBAMType.FILTERED_DEDUP
+
+        lib_val = data.get("library_treatment", "NONE")
+        try:
+            lib = LibraryTreatment(lib_val)
+        except ValueError:
+            lib = LibraryTreatment.NONE
+
+        sig_val = data.get("damage_signal_level", "NOISY_OR_INSUFFICIENT")
+        try:
+            sig = DamageSignalLevel(sig_val)
+        except ValueError:
+            sig = DamageSignalLevel.NOISY_OR_INSUFFICIENT
+
+        ver_val = data.get("authentication_verdict", "INCONCLUSIVE")
+        try:
+            ver = AuthenticationVerdict(ver_val)
+        except ValueError:
+            ver = AuthenticationVerdict.INCONCLUSIVE
+
+        bam_p = Path(data["input_bam_path"]) if data.get("input_bam_path") else None
+        td = TerminalDamageFrequencies.from_dict(data.get("terminal_damage", {}))
+        fl = FragmentLengthMetrics.from_dict(data.get("fragment_length", {}))
+        bp = BayesianDamageParameters.from_dict(data.get("bayesian_parameters", {}))
+        pm = PMDMetrics.from_dict(data["pmd_metrics"]) if data.get("pmd_metrics") else None
+
+        return cls(
+            sample_id=s_id,
+            input_bam_type=bam_type,
+            input_bam_path=bam_p,
+            reference_contig=data.get("reference_contig"),
+            library_treatment=lib,
+            terminal_damage=td,
+            fragment_length=fl,
+            bayesian_parameters=bp,
+            pmd_metrics=pm,
+            damage_signal_level=sig,
+            authentication_verdict=ver,
+            rescaling_applied=bool(data.get("rescaling_applied", False)),
+        )
 
 
 @dataclass
@@ -402,3 +575,48 @@ class DamageResult:
                 "runtime_seconds": self.runtime_seconds,
             },
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DamageResult":
+        """Rehydrates a full DamageResult instance from a serialized dictionary."""
+        s_id = data.get("sample_id", "")
+        status_val = data.get("status", "UNTESTED")
+        try:
+            status = DamageStatus(status_val)
+        except ValueError:
+            status = DamageStatus.UNTESTED
+
+        policy_obj = DamagePolicy.from_dict(data.get("policy", {}))
+        profile_obj = DamageModelProfile.from_dict(data.get("profile", {}))
+        outputs_obj = DamageOutputFiles.from_dict(data.get("outputs", {}))
+
+        warn_codes: List[DamageWarningCode] = []
+        for w in data.get("warning_codes", []):
+            try:
+                warn_codes.append(DamageWarningCode(w))
+            except ValueError:
+                pass
+
+        err_codes: List[DamageErrorCode] = []
+        for e in data.get("error_codes", []):
+            try:
+                err_codes.append(DamageErrorCode(e))
+            except ValueError:
+                pass
+
+        timestamps = data.get("timestamps", {})
+
+        return cls(
+            sample_id=s_id,
+            status=status,
+            policy=policy_obj,
+            profile=profile_obj,
+            outputs=outputs_obj,
+            warning_codes=warn_codes,
+            error_codes=err_codes,
+            warnings=data.get("warnings", []),
+            errors=data.get("errors", []),
+            execution_started=timestamps.get("started"),
+            execution_finished=timestamps.get("finished"),
+            runtime_seconds=timestamps.get("runtime_seconds"),
+        )
