@@ -743,7 +743,7 @@ For each evaluated specimen, deliverables are partitioned into method-specific s
         actions, and VCF filters across Blocks 3 through 8.
         """
         glossary_path = self.dir_master / "WARNINGS_GLOSSARY.md"
-        content = """# Forensic Mitochondrial Pipeline: Diagnostic Warnings, Errors & VCF Filter Glossary
+        content = r"""# Forensic Mitochondrial Pipeline: Diagnostic Warnings, Errors & VCF Filter Glossary
 *Pipeline Release: v1.2.0 | Master Reference Documentation*
 
 ---
