@@ -64,12 +64,8 @@ class ProvenanceChecker:
         self.enforce_strict_provenance = enforce_strict_provenance
         self.expected_reference_length = expected_reference_length
 
-    # --------------------------------------------------------------------------
-    # Cryptographic & Low-Level Helpers
-    # --------------------------------------------------------------------------
     @classmethod
     def calculate_sha256(cls, filepath: Path) -> str:
-        """Compute SHA-256 hex digest for a physical file using chunked streaming."""
         hasher = hashlib.sha256()
         try:
             with open(filepath, "rb") as fp:
@@ -81,14 +77,12 @@ class ProvenanceChecker:
 
     @staticmethod
     def is_valid_sha256(digest: Optional[str]) -> bool:
-        """Strictly validate whether a string conforms to a 64-character hexadecimal SHA-256."""
         if not digest or not isinstance(digest, str):
             return False
         return bool(SHA256_REGEX.match(digest.strip()))
 
     @staticmethod
     def _format_mtime_utc(filepath: Path) -> Optional[str]:
-        """Extract file last modified timestamp formatted as ISO-8601 UTC."""
         try:
             mtime = filepath.stat().st_mtime
             return datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
@@ -97,7 +91,6 @@ class ProvenanceChecker:
 
     @staticmethod
     def _read_contract_dict(path: Optional[Path]) -> Dict[str, Any]:
-        """Safely read JSON dictionary returning empty dict on failure."""
         if path and path.is_file():
             try:
                 with open(path, "r", encoding="utf-8") as fp:
@@ -107,14 +100,7 @@ class ProvenanceChecker:
                 return {}
         return {}
 
-    # --------------------------------------------------------------------------
-    # Root of Trust / Execution Manifest Discovery
-    # --------------------------------------------------------------------------
     def discover_execution_manifest(self, sample_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Locate external execution manifest establishing the project's root of trust.
-        Searches project root, results directory, and operational_files directory.
-        """
         candidate_paths = [
             self.results_dir / "execution_manifest.json",
             self.results_dir / "run_manifest.json",
@@ -137,9 +123,6 @@ class ProvenanceChecker:
                     logger.warning(f"Could not parse candidate manifest at '{p}': {err}")
         return None
 
-    # --------------------------------------------------------------------------
-    # Level 1 & 2: Physical & Cryptographic Artifact Auditing
-    # --------------------------------------------------------------------------
     def audit_single_file(
         self,
         artifact_name: str,
@@ -148,10 +131,6 @@ class ProvenanceChecker:
         is_required: bool = True,
         is_gated: bool = False,
     ) -> ProvenanceItem:
-        """
-        Inspect physical existence, file size, timestamps, and SHA-256 against expectation.
-        Categorizes granular failures into FILE_MISSING, IO_ERROR, MISMATCH, or UNANCHORED.
-        """
         if is_gated and (file_path is None or not file_path.is_file()):
             p_str = str(file_path) if file_path is not None else "NOT_PRODUCED"
             return ProvenanceItem(
@@ -207,7 +186,6 @@ class ProvenanceChecker:
 
             actual_sha = self.calculate_sha256(file_path)
 
-            # Dedicated handling of physical index files (BAI and Tabix lack contract seals)
             if artifact_name in {"aligned_bam_index", "variants_vcf_tabix"} and (
                 not expected_sha256 or expected_sha256.upper() in {"UNSPECIFIED", "NONE", "MISSING", ""}
             ):
@@ -222,7 +200,6 @@ class ProvenanceChecker:
                     error_message=None,
                 )
 
-            # Formal validation of expected hash
             if not expected_sha256 or expected_sha256.upper() in {"UNSPECIFIED", "NONE", "MISSING", ""}:
                 return ProvenanceItem(
                     artifact_name=artifact_name,
@@ -291,16 +268,12 @@ class ProvenanceChecker:
                 error_message=f"Unexpected internal failure during inspection: {err}",
             )
 
-    # --------------------------------------------------------------------------
-    # Level 3: Deep Semantic Bioinformatic Inspection (BAM, FASTA, VCF)
-    # --------------------------------------------------------------------------
     def audit_bam_semantic(
         self,
         bam_path: Optional[Path],
         expected_sample_id: str,
         expected_contig: Optional[str] = None,
     ) -> SemanticVerificationItem:
-        """Inspect BAM binary integrity, coordinate sorting tag, index queryability, and contig presence."""
         if not bam_path or not bam_path.is_file():
             return SemanticVerificationItem(
                 artifact_name="bam_semantic",
@@ -398,7 +371,6 @@ class ProvenanceChecker:
         expected_sample_id: str,
         is_indel_aware: bool = False,
     ) -> SemanticVerificationItem:
-        """Inspect consensus FASTA for single-record integrity, alphabet validity, and length."""
         if not fasta_path or not fasta_path.is_file():
             return SemanticVerificationItem(
                 artifact_name="fasta_semantic",
@@ -484,7 +456,6 @@ class ProvenanceChecker:
         vcf_path: Optional[Path],
         expected_sample_id: str,
     ) -> SemanticVerificationItem:
-        """Inspect VCF syntax, bgzip compression, and sample column header presence."""
         if not vcf_path or not vcf_path.is_file():
             return SemanticVerificationItem(
                 artifact_name="vcf_semantic",
@@ -556,26 +527,36 @@ class ProvenanceChecker:
                 error_message=f"Corrupted or truncated VCF syntax: {err}",
             )
 
-    # --------------------------------------------------------------------------
-    # Level 4: Cross-Block Lineage Consistency Matrix
-    # --------------------------------------------------------------------------
     def audit_cross_block_lineage(
         self,
         contracts_data: Dict[str, Dict[str, Any]],
     ) -> List[LineageVerificationItem]:
-        """
-        Verify mathematical identity of entities passed across pipeline frontiers:
-        B4 dedup BAM == B5 input BAM; B4 active BAM == B6 input BAM;
-        B6 FASTA == B7 FASTA; B6 VCF == B7 VCF.
-        """
         items: List[LineageVerificationItem] = []
+        d3 = contracts_data.get("block3", {})
         d4 = contracts_data.get("block4", {})
         d5 = contracts_data.get("block5", {})
         d6 = contracts_data.get("block6", {})
         d7 = contracts_data.get("block7", {})
 
-        # 1. Lineage B4 -> B5 (BAM Input Identity for Contamination)
-        b4_unrescaled_sha = d4.get("filtered_dedup_bam_sha256") or d4.get("bam_sha256")
+        # Lineage B3 -> B4 (Dedup BAM Identity)
+        b3_bam_sha = d3.get("dedup_bam_sha256") or d3.get("bam_sha256")
+        b4_in_sha = d4.get("input_bam_sha256") or d4.get("filtered_dedup_bam_sha256") or d4.get("bam_sha256")
+        if b3_bam_sha and b4_in_sha:
+            match = (b3_bam_sha.lower() == b4_in_sha.lower())
+            items.append(
+                LineageVerificationItem(
+                    source_block="BLOCK3",
+                    target_block="BLOCK4",
+                    entity_name="dedup_bam",
+                    source_hash=b3_bam_sha,
+                    target_hash=b4_in_sha,
+                    is_consistent=match,
+                    message=None if match else "Block 4 input BAM hash differs from Block 3 dedup BAM.",
+                )
+            )
+
+        # Lineage B4 -> B5 (BAM Input Identity for Contamination)
+        b4_unrescaled_sha = d4.get("filtered_dedup_bam_sha256") or d4.get("bam_sha256") or b3_bam_sha
         b5_bam_sha = d5.get("input_bam_sha256") or d5.get("bam_sha256")
 
         if b4_unrescaled_sha and b5_bam_sha:
@@ -592,14 +573,14 @@ class ProvenanceChecker:
                 )
             )
 
-        # 2. Lineage B4 -> B6 (BAM Input Identity for Consensus)
+        # Lineage B4 -> B6 (BAM Input Identity for Consensus)
         is_ancient = "AUTHENTIC_ANCIENT" in str(d4.get("authentication_status", "")).upper()
         if is_ancient and d4.get("rescaling_performed"):
             b4_consensus_expected_bam = d4.get("rescaled_bam_sha256")
         else:
-            b4_consensus_expected_bam = d4.get("filtered_dedup_bam_sha256") or d4.get("bam_sha256")
+            b4_consensus_expected_bam = d4.get("filtered_dedup_bam_sha256") or d4.get("bam_sha256") or b3_bam_sha
 
-        b6_bam_sha = d6.get("input_bam_sha256")
+        b6_bam_sha = d6.get("input_bam_sha256") or d6.get("bam_sha256")
         if b4_consensus_expected_bam and b6_bam_sha:
             match = (b4_consensus_expected_bam.lower() == b6_bam_sha.lower())
             items.append(
@@ -614,7 +595,7 @@ class ProvenanceChecker:
                 )
             )
 
-        # 3. Lineage B6 -> B7 (Consensus FASTA Identity)
+        # Lineage B6 -> B7 (Consensus FASTA Identity)
         b6_fasta_sha = d6.get("consensus_fasta_sha256")
         b7_fasta_sha = d7.get("fasta_sha256") or d7.get("consensus_fasta_sha256")
         if b6_fasta_sha and b7_fasta_sha:
@@ -631,7 +612,7 @@ class ProvenanceChecker:
                 )
             )
 
-        # 4. Lineage B6 -> B7 (Variants VCF Identity)
+        # Lineage B6 -> B7 (Variants VCF Identity)
         b6_vcf_sha = d6.get("variants_vcf_sha256")
         b7_vcf_sha = d7.get("variants_vcf_sha256") or d7.get("vcf_sha256")
         if b6_vcf_sha and b7_vcf_sha:
@@ -648,8 +629,9 @@ class ProvenanceChecker:
                 )
             )
 
-        # 5. Reference Genome Continuity Across All Contracts
+        # Continuity Across All Contracts
         ref_shas = {
+            "B3": d3.get("reference_sha256"),
             "B4": d4.get("reference_sha256"),
             "B5": d5.get("reference_sha256"),
             "B6": d6.get("reference_sha256"),
@@ -671,18 +653,11 @@ class ProvenanceChecker:
 
         return items
 
-    # --------------------------------------------------------------------------
-    # Master Audit Orchestration
-    # --------------------------------------------------------------------------
     def audit_sample_provenance(
         self,
         record: SampleMasterRecord,
         contracts: ContractFileSet,
     ) -> FinalVerificationReport:
-        """
-        Execute full-spectrum 4-tier chain-of-custody verification.
-        Populates record.provenance, injects categorized warnings, and builds FinalVerificationReport.
-        """
         sample_id = record.sample_id
         critical_failures: List[str] = []
         cautionary_warnings: List[str] = []
@@ -717,9 +692,7 @@ class ProvenanceChecker:
                 return manifest_contracts[f"{sample_id}_{b_label}_sha256"]
             return manifest_contracts.get(f"{b_label}_sha256")
 
-        # ----------------------------------------------------------------------
-        # Tier 1: Upstream JSON Contract Audit
-        # ----------------------------------------------------------------------
+        # Tier 1: Contracts
         contract_checks: List[ProvenanceItem] = []
         expected_contract_seals = {
             "block2_contract": _get_manifest_seal("block2_contract"),
@@ -757,34 +730,39 @@ class ProvenanceChecker:
             )
             contract_checks.append(item)
 
-        # ----------------------------------------------------------------------
-        # Tier 2: Primary Physical Artifact Audit
-        # ----------------------------------------------------------------------
+        # Tier 2: Physical Artifacts
         artifact_checks: List[ProvenanceItem] = []
 
-        def _resolve_candidate(raw_val: Optional[str], sub_dir: str, fname: str) -> Optional[Path]:
+        def _resolve_candidate(raw_val: Optional[str], sub_dir: str, fnames: Union[str, List[str]]) -> Optional[Path]:
             if raw_val:
                 p = Path(raw_val)
                 if p.is_file():
                     return p
+            name_list = [fnames] if isinstance(fnames, str) else fnames
             for base_d in (self.operational_files_dir, self.results_dir):
-                c = base_d / sub_dir / sample_id / fname
-                if c.is_file():
-                    return c
-            return Path(raw_val) if raw_val else (self.operational_files_dir / sub_dir / sample_id / fname)
+                for fn in name_list:
+                    c = base_d / sub_dir / sample_id / fn
+                    if c.is_file():
+                        return c
+            return Path(raw_val) if raw_val else (self.operational_files_dir / sub_dir / sample_id / name_list[0])
 
+        d3 = raw_contracts["block3"]
         d4 = raw_contracts["block4"]
         rescaling_perf = bool(d4.get("rescaling_performed", False))
         if rescaling_perf:
             bam_path_val = d4.get("rescaled_bam")
             exp_bam_sha = d4.get("rescaled_bam_sha256")
             bam_label = "rescaled_ancient_bam"
-            bam_path = _resolve_candidate(bam_path_val, "damage", f"{sample_id}.rescaled.bam")
+            bam_path = _resolve_candidate(bam_path_val, "damage", [f"{sample_id}.rescaled.bam", f"{sample_id}.bam"])
         else:
-            bam_path_val = d4.get("filtered_dedup_bam") or d4.get("bam_path")
-            exp_bam_sha = d4.get("filtered_dedup_bam_sha256") or d4.get("bam_sha256")
+            bam_path_val = d4.get("filtered_dedup_bam") or d4.get("bam_path") or d3.get("dedup_bam_path") or d3.get("bam_path")
+            exp_bam_sha = d4.get("filtered_dedup_bam_sha256") or d4.get("bam_sha256") or d3.get("dedup_bam_sha256") or d3.get("bam_sha256")
             bam_label = "filtered_dedup_bam"
-            bam_path = _resolve_candidate(bam_path_val, "alignment", f"{sample_id}.filtered.dedup.bam")
+            bam_path = _resolve_candidate(
+                bam_path_val,
+                "alignment",
+                [f"{sample_id}.filtered.dedup.bam", f"{sample_id}.dedup.bam", f"{sample_id}.bam"],
+            )
 
         artifact_checks.append(
             self.audit_single_file(
@@ -815,7 +793,9 @@ class ProvenanceChecker:
         d7 = raw_contracts["block7"]
 
         fasta_path = _resolve_candidate(
-            d6.get("consensus_fasta_path"), "consensus", f"{sample_id}.consensus.fasta"
+            d6.get("consensus_fasta_path"),
+            "consensus",
+            [f"{sample_id}.consensus.fasta", f"{sample_id}.canonical.fasta", f"{sample_id}.fasta"],
         )
         exp_fasta_sha = d6.get("consensus_fasta_sha256") or d7.get("fasta_sha256")
 
@@ -830,7 +810,9 @@ class ProvenanceChecker:
         )
 
         indel_path = _resolve_candidate(
-            d6.get("consensus_indel_fasta_path"), "consensus", f"{sample_id}.consensus_indel.fasta"
+            d6.get("consensus_indel_fasta_path"),
+            "consensus",
+            [f"{sample_id}.consensus_indel.fasta", f"{sample_id}.indel_aware.fasta"],
         )
         indel_required = bool(d7.get("indel_consensus_used", False))
         exp_indel_sha = d6.get("consensus_indel_fasta_sha256")
@@ -861,7 +843,9 @@ class ProvenanceChecker:
                 )
 
         vcf_path = _resolve_candidate(
-            d6.get("variants_vcf_path"), "consensus", f"{sample_id}.variants.vcf.gz"
+            d6.get("variants_vcf_path"),
+            "consensus",
+            [f"{sample_id}.variants.vcf.gz", f"{sample_id}.vcf.gz"],
         )
         exp_vcf_sha = d6.get("variants_vcf_sha256") or d7.get("vcf_sha256") or d7.get("variants_vcf_sha256")
 
@@ -886,13 +870,11 @@ class ProvenanceChecker:
             )
         )
 
-        # ----------------------------------------------------------------------
-        # Tier 3: Deep Semantic Bioinformatic Inspection
-        # ----------------------------------------------------------------------
+        # Tier 3: Semantic Inspection
         semantic_checks: List[SemanticVerificationItem] = []
 
         if bam_path and bam_path.is_file():
-            target_contig = d4.get("reference_contig") or d6.get("reference_contig")
+            target_contig = d4.get("reference_contig") or d6.get("reference_contig") or d3.get("reference_contig")
             semantic_checks.append(self.audit_bam_semantic(bam_path, sample_id, target_contig))
 
         if not is_gated_upstream:
@@ -903,14 +885,10 @@ class ProvenanceChecker:
             if vcf_path and vcf_path.is_file():
                 semantic_checks.append(self.audit_vcf_semantic(vcf_path, sample_id))
 
-        # ----------------------------------------------------------------------
-        # Tier 4: Cross-Block Lineage Consistency Matrix
-        # ----------------------------------------------------------------------
+        # Tier 4: Lineage Matrix
         lineage_checks = self.audit_cross_block_lineage(raw_contracts)
 
-        # ----------------------------------------------------------------------
-        # Integrity Synthesis & Warning Escalation
-        # ----------------------------------------------------------------------
+        # Diagnostic Synthesis
         all_physical_items = contract_checks + artifact_checks
         record.provenance = all_physical_items
 

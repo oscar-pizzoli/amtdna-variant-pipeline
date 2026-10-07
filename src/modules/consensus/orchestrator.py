@@ -19,6 +19,7 @@ from src.modules.consensus.enums import (
     CallStatus,
     ConsensusCallStatus,
     ContaminationEstimateSource,
+    FilterReason,
     GatingAction,
     InputRole,
 )
@@ -305,6 +306,7 @@ class ConsensusOrchestrator:
             '##FILTER=<ID=FILTER_DAMAGE_SUSPECT,Description="Filtered due to suspected post-mortem damage">',
             '##FILTER=<ID=FILTER_AMBIGUOUS,Description="Site is ambiguous, contested, or inside homopolymer slippage tract">',
             '##FILTER=<ID=FILTER_REFERENCE_MISMATCH,Description="Reference base is non-canonical or legacy placeholder">',
+            '##FILTER=<ID=FILTER_EXCLUDED_INTERVAL,Description="Variant falls within blacklisted artifact or excluded interval (e.g. 3107N gap or poly-C)">',
             '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
             '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Callable depth">',
             '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths (REF, ALT1, ALT2...)">',
@@ -358,7 +360,6 @@ class ConsensusOrchestrator:
 
             if call.variant_type == MutationType.SNV:
                 vcf_ref = ref_b
-                # Risoluzione dinamica della polarità per eteroplasmie a frequenza invertita
                 if call.minor_allele.upper() != ref_b:
                     vcf_alt = call.minor_allele.upper()
                     af_val = call.alt_vaf
@@ -402,7 +403,17 @@ class ConsensusOrchestrator:
             status_str = call.status.value
             filter_str = "PASS" if status_str == "PASS" else call.filter_reason.value
 
-            is_op = (call.status == CallStatus.PASS and not call.is_slippage_suspect) or is_fixed_indel
+            # Rilevamento di intervallo escluso/artefatto
+            is_excluded_artifact = (
+                call.filter_reason == FilterReason.FILTER_EXCLUDED_INTERVAL
+                or self.policy.is_position_excluded(pos)
+            )
+
+            # Instradamento operativo: le varianti in intervalli esclusi vengono dirottate nel subconsensus audit
+            is_op = (
+                (call.status == CallStatus.PASS and not call.is_slippage_suspect and not is_excluded_artifact)
+                or (is_fixed_indel and not is_excluded_artifact)
+            )
 
             cand = VcfAlleleCandidate(
                 pos=pos,
@@ -634,6 +645,7 @@ class ConsensusOrchestrator:
             spatial_end_distance_threshold=resolved_threshold,
             spatial_thresholds=self.policy.spatial_thresholds,
             slippage_regions=self.policy.slippage_regions,
+            excluded_intervals=self.policy.excluded_intervals,
         )
 
         pileup_engine = PileupEngine(

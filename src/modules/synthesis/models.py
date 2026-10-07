@@ -1,6 +1,7 @@
 """
 Block 8 Models: Core dataclasses, formal schemas, multi-tier warning taxonomies,
 and serialization primitives for holistic sample synthesis, sequencing QC, and cohort packaging.
+Extended with native BAM-mode awareness to suppress unmeasured FASTQ metrics.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -99,6 +100,7 @@ def format_pct_fraction(value: Optional[float], decimals: int = 2) -> str:
 # CO-LOCATED MASTER TSV HEADERS
 # ==============================================================================
 
+# Standard headers for FASTQ workflows (52 columns)
 SAMPLE_MASTER_TSV_HEADERS: List[str] = [
     # 1. General Identifiers
     "sample_id",
@@ -161,6 +163,25 @@ SAMPLE_MASTER_TSV_HEADERS: List[str] = [
     "total_mutations_count",
     "total_warnings_count",
     "active_warning_codes",
+]
+
+# Columns specific to FASTQ trimming and merging
+BLOCK2_TRIMMING_HEADERS: List[str] = [
+    "raw_reads_total",
+    "clean_reads_total",
+    "retention_fraction",
+    "collapsed_fraction",
+    "adapter_trimmed_reads_pct",
+    "q20_rate_post",
+    "q30_rate_post",
+    "gc_content_pct",
+    "mean_read_length_pre",
+    "mean_read_length_post",
+]
+
+# Specialized headers for direct BAM ingestion (42 columns, trimming omitted)
+SAMPLE_MASTER_BAM_TSV_HEADERS: List[str] = [
+    h for h in SAMPLE_MASTER_TSV_HEADERS if h not in BLOCK2_TRIMMING_HEADERS
 ]
 
 MUTATION_TSV_HEADERS: List[str] = [
@@ -245,7 +266,7 @@ class SemanticVerificationItem:
     """Detailed result of deep bioinformatic format and header inspection."""
     artifact_name: str
     file_path: str
-    format_type: str  # BAM, FASTA, VCF, TSV
+    format_type: str
     is_valid: bool
     details: Dict[str, Any] = field(default_factory=dict)
     error_message: Optional[str] = None
@@ -268,7 +289,7 @@ class FinalVerificationReport:
     """Holistic forensic report assessing chain-of-custody and data integrity."""
     sample_id: str
     run_id: str
-    overall_status: str  # PASS, WARN, FAIL
+    overall_status: str
     manifest_anchored: bool
     contract_checks: List[ProvenanceItem] = field(default_factory=list)
     artifact_checks: List[ProvenanceItem] = field(default_factory=list)
@@ -290,7 +311,7 @@ class MutationEntry:
     alt: str
     variant_type: MutationType
     mutation_notation: str
-    stream_source: str  # "MAJOR_CONSENSUS", "HETEROPLASMY", "PHYLOGENY_ONLY"
+    stream_source: str
     role: MutationRole
     depth: Optional[int] = None
     vaf: Optional[float] = None
@@ -362,10 +383,10 @@ class SequencingQCSummary:
     clean_reads_total: Optional[int] = None
     retention_fraction: Optional[float] = None
     collapsed_fraction: Optional[float] = None
-    adapter_trimmed_reads_pct: Optional[float] = None  # Scale 0.0 - 100.0
-    q20_rate_post: Optional[float] = None              # Scale 0.0 - 1.0
-    q30_rate_post: Optional[float] = None              # Scale 0.0 - 1.0
-    gc_content_pct: Optional[float] = None             # Scale 0.0 - 100.0
+    adapter_trimmed_reads_pct: Optional[float] = None
+    q20_rate_post: Optional[float] = None
+    q30_rate_post: Optional[float] = None
+    gc_content_pct: Optional[float] = None
     mean_read_length_pre: Optional[float] = None
     mean_read_length_post: Optional[float] = None
     per_base_quality_cycles: List[Dict[str, Any]] = field(default_factory=list)
@@ -377,7 +398,7 @@ class AlignmentSummary:
     """Block 3 Formal Summary."""
     mapped_reads_mt: Optional[int] = None
     endogenous_dna_fraction: Optional[float] = None
-    endogenous_dna_fraction_source: Optional[str] = None  # "BLOCK3" or "DERIVED_BLOCK2+BLOCK3"
+    endogenous_dna_fraction_source: Optional[str] = None
     mean_depth: Optional[float] = None
     coverage_breadth_1x: Optional[float] = None
     coverage_breadth_3x: Optional[float] = None
@@ -465,7 +486,7 @@ class HaplogroupSummary:
 class SampleMasterRecord:
     """Unified single source of truth for an analyzed specimen across Blocks 1 through 7."""
     sample_id: str
-    overall_status: str  # "PASS", "WARN", "FAIL"
+    overall_status: str
     synthesis_timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -487,14 +508,15 @@ class SampleMasterRecord:
     upstream_contracts_sha256: Dict[str, str] = field(default_factory=dict)
     upstream_composite_hash: str = ""
 
+    @property
+    def is_bam_mode(self) -> bool:
+        """Indica se il campione è stato ingerito direttamente da BAM senza preprocessing FASTQ."""
+        return getattr(self.preprocessing, "output_profile", "") == "BAM_PASSTHROUGH"
+
     def validate_invariants(self) -> List[InvariantViolation]:
-        """
-        Validate cross-field logical invariants, sanitize contradictory states,
-        and emit typed InvariantViolation items prior to packaging.
-        """
+        """Validate cross-field logical invariants and sanitize contradictory states."""
         violations: List[InvariantViolation] = []
 
-        # 1. Subclade shift coherence
         if not self.haplogroup.subclade_shift_detected:
             if self.haplogroup.subclade_shift_supported is not None:
                 self.haplogroup.subclade_shift_supported = None
@@ -507,7 +529,6 @@ class SampleMasterRecord:
                     )
                 )
 
-        # 2. Contamination confidence interval bounds
         c = self.contamination
         if c.ci_95_lower is not None and c.ci_95_upper is not None:
             if c.ci_95_lower > c.ci_95_upper:
@@ -530,15 +551,13 @@ class SampleMasterRecord:
                         )
                     )
 
-        # 3. Derive endogenous DNA fraction if missing
-        if self.alignment.endogenous_dna_fraction is None:
+        if not self.is_bam_mode and self.alignment.endogenous_dna_fraction is None:
             raw = self.preprocessing.raw_reads_total
             mapped = self.alignment.mapped_reads_mt
             if raw and mapped is not None and raw > 0:
                 self.alignment.endogenous_dna_fraction = round(mapped / raw, 6)
                 self.alignment.endogenous_dna_fraction_source = "DERIVED_BLOCK2+BLOCK3"
 
-        # 4. Probability bounds check [0.0, 1.0] for fractional fields
         bounded_fractions = [
             ("retention_fraction", self.preprocessing.retention_fraction),
             ("collapsed_fraction", self.preprocessing.collapsed_fraction),
@@ -570,7 +589,6 @@ class SampleMasterRecord:
                     )
                 )
 
-        # 5. Percentage bounds check [0.0, 100.0] for fields with _pct suffix
         bounded_pcts = [
             ("adapter_trimmed_reads_pct", self.sequencing_qc.adapter_trimmed_reads_pct),
             ("gc_content_pct", self.sequencing_qc.gc_content_pct),
@@ -631,15 +649,37 @@ class SampleMasterRecord:
         return " ".join(sentences)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert master record to structured dictionary with proper nested representations."""
-        return {
+        """Convert master record to structured dictionary, adapting dynamic sections for BAM inputs."""
+        # Sezione preprocessing pulita in base alla modalità di input
+        if self.is_bam_mode:
+            prep_payload: Dict[str, Any] = {
+                "input_format": "BAM",
+                "output_profile": "BAM_PASSTHROUGH",
+                "status": "BYPASSED",
+                "note": "Direct BAM ingestion: FASTQ adapter trimming and read merging not applicable",
+            }
+        else:
+            prep_payload = asdict(self.preprocessing)
+
+        aln_payload = asdict(self.alignment)
+        if self.is_bam_mode and aln_payload.get("endogenous_dna_fraction") is None:
+            aln_payload["endogenous_dna_fraction"] = None
+            aln_payload["endogenous_dna_fraction_source"] = None
+
+        record_dict: Dict[str, Any] = {
             "sample_id": self.sample_id,
             "overall_status": self.overall_status,
             "synthesis_timestamp": self.synthesis_timestamp,
             "narrative": self.get_warning_narrative(),
-            "preprocessing": asdict(self.preprocessing),
-            "sequencing_qc": asdict(self.sequencing_qc),
-            "alignment": asdict(self.alignment),
+            "preprocessing": prep_payload,
+        }
+
+        # La sezione sequencing_qc viene inclusa unicamente se si è partiti da letture FASTQ
+        if not self.is_bam_mode:
+            record_dict["sequencing_qc"] = asdict(self.sequencing_qc)
+
+        record_dict.update({
+            "alignment": aln_payload,
             "macro_complexes": asdict(self.macro_complexes),
             "authenticity": {
                 **asdict(self.authenticity),
@@ -658,12 +698,14 @@ class SampleMasterRecord:
             "execution_times_seconds": self.execution_times_seconds,
             "upstream_contracts_sha256": self.upstream_contracts_sha256,
             "upstream_composite_hash": self.upstream_composite_hash,
-        }
+        })
+
+        return record_dict
 
     def to_summary_tsv_row(self) -> List[str]:
         """
-        Emit flattened row strictly formatted and positional-parity verified
-        against SAMPLE_MASTER_TSV_HEADERS (single source of truth for cohort exports).
+        Emit flattened row strictly formatted and positional-parity verified.
+        Emits 42 columns for BAM inputs (omitting trimming metrics) or 52 columns for FASTQ.
         """
         active_warns = [w.code for w in self.warnings]
         warn_str = "; ".join(active_warns) if active_warns else "CLEAN"
@@ -677,12 +719,15 @@ class SampleMasterRecord:
         mc = self.macro_complexes
         sq = self.sequencing_qc
 
-        row = [
-            # 1. General Identifiers
+        # 1. Identificatori generali (3)
+        row: List[str] = [
             self.sample_id,
             self.overall_status,
             self.authenticity.biological_type.value,
-            # 2. Block 7 (Phylogeny & Lineage)
+        ]
+
+        # 2. Filogenesi e Aplogruppo (7)
+        row.extend([
             self.haplogroup.primary_haplogroup,
             self.haplogroup.resolved_haplogroup,
             format_na(self.haplogroup.quality_score, "{:.4f}"),
@@ -690,18 +735,25 @@ class SampleMasterRecord:
             self.haplogroup.haplogroup_status,
             "TRUE" if self.haplogroup.subclade_shift_detected else "FALSE",
             shift_supp_str,
-            # 3. Sequencing QC & Trimming (Block 2)
-            format_na(sq.raw_reads_total if sq.raw_reads_total is not None else self.preprocessing.raw_reads_total),
-            format_na(sq.clean_reads_total if sq.clean_reads_total is not None else self.preprocessing.retained_reads_total),
-            format_na(self.preprocessing.retention_fraction, "{:.4f}"),
-            format_na(self.preprocessing.collapsed_fraction, "{:.4f}"),
-            format_pct_100(sq.adapter_trimmed_reads_pct),
-            format_pct_fraction(sq.q20_rate_post),
-            format_pct_fraction(sq.q30_rate_post),
-            format_pct_100(sq.gc_content_pct),
-            format_na(sq.mean_read_length_pre, "{:.1f}"),
-            format_na(sq.mean_read_length_post, "{:.1f}"),
-            # 4. Block 3 (Alignment & Whole-mt Coverage)
+        ])
+
+        # 3. Metriche di Trimming e Qualità FASTQ (10) - Omesse in modalità BAM
+        if not self.is_bam_mode:
+            row.extend([
+                format_na(sq.raw_reads_total if sq.raw_reads_total is not None else self.preprocessing.raw_reads_total),
+                format_na(sq.clean_reads_total if sq.clean_reads_total is not None else self.preprocessing.retained_reads_total),
+                format_na(self.preprocessing.retention_fraction, "{:.4f}"),
+                format_na(self.preprocessing.collapsed_fraction, "{:.4f}"),
+                format_pct_100(sq.adapter_trimmed_reads_pct),
+                format_pct_fraction(sq.q20_rate_post),
+                format_pct_fraction(sq.q30_rate_post),
+                format_pct_100(sq.gc_content_pct),
+                format_na(sq.mean_read_length_pre, "{:.1f}"),
+                format_na(sq.mean_read_length_post, "{:.1f}"),
+            ])
+
+        # 4. Allineamento e Copertura Whole-mt (8)
+        row.extend([
             format_na(self.alignment.mapped_reads_mt),
             format_na(self.alignment.endogenous_dna_fraction, "{:.4f}"),
             format_na(self.alignment.endogenous_dna_fraction_source),
@@ -710,7 +762,10 @@ class SampleMasterRecord:
             format_na(self.alignment.coverage_breadth_3x, "{:.4f}"),
             format_na(self.alignment.coverage_breadth_5x, "{:.4f}"),
             format_na(self.alignment.duplication_rate, "{:.4f}"),
-            # 5. Mitochondrial Macro-Complexes Coverage (Block 6)
+        ])
+
+        # 5. Copertura Macro-Complessi (10)
+        row.extend([
             format_na(mc.cov_dloop_mean, "{:.1f}"),
             format_pct_fraction(mc.cov_dloop_1x),
             format_na(mc.cov_rrna_mean, "{:.1f}"),
@@ -721,29 +776,42 @@ class SampleMasterRecord:
             format_pct_fraction(mc.cov_nd_1x),
             format_na(mc.cov_cyb_mean, "{:.1f}"),
             format_pct_fraction(mc.cov_cyb_1x),
-            # 6. Block 4 (Authenticity & Degradation Kinetics)
+        ])
+
+        # 6. Autenticità e Danno aDNA (5)
+        row.extend([
             format_na(self.authenticity.median_fragment_length, "{:.1f}"),
             format_na(self.authenticity.pmd_fraction_ge_3, "{:.4f}"),
             format_na(self.authenticity.c_to_t_5p_rate_pos1, "{:.4f}"),
             format_na(self.authenticity.g_to_a_3p_rate_pos1, "{:.4f}"),
             "TRUE" if self.authenticity.rescaling_performed else "FALSE",
-            # 7. Block 5 (Contamination Assessment)
+        ])
+
+        # 7. Contaminazione (4)
+        row.extend([
             contam_str,
             ci_str,
             self.contamination.estimation_confidence,
             self.contamination.recommended_action,
-            # 8. Block 6 (Consensus & Heteroplasmy)
+        ])
+
+        # 8. Consenso ed Eteroplasmia (2)
+        row.extend([
             format_na(self.consensus.n_fraction_canonical, "{:.4f}"),
             str(self.consensus.heteroplasmy_sites_pass),
-            # 9. Block 8 Synthesis & Audit
+        ])
+
+        # 9. Sintesi e Warning (3)
+        row.extend([
             str(len(self.mutations)),
             str(len(self.warnings)),
             warn_str,
-        ]
+        ])
 
-        if len(row) != len(SAMPLE_MASTER_TSV_HEADERS):
+        expected_headers = SAMPLE_MASTER_BAM_TSV_HEADERS if self.is_bam_mode else SAMPLE_MASTER_TSV_HEADERS
+        if len(row) != len(expected_headers):
             raise ValueError(
-                f"Master TSV row length ({len(row)}) does not match SAMPLE_MASTER_TSV_HEADERS ({len(SAMPLE_MASTER_TSV_HEADERS)})."
+                f"Master TSV row length ({len(row)}) does not match expected headers ({len(expected_headers)})."
             )
         return row
 

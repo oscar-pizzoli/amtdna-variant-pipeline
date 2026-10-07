@@ -1,7 +1,7 @@
 """
 Data structures, observational contracts, and QC containers for Block 6.
 Extended with structural InDel tracking, homopolymer slippage definitions,
-strict input sanitization, and cryptographic provenance contracts.
+excluded blacklist intervals, strict input sanitization, and cryptographic provenance contracts.
 """
 
 from dataclasses import dataclass, field
@@ -142,9 +142,7 @@ class SitePileup:
     mean_bq: float
     mean_mq: float
     filter_metrics: PileupFilterMetrics
-    # Distances in cycles/bases to the nearest true physical read/insert terminus
     read_end_distances: Dict[str, List[int]] = field(default_factory=dict)
-    # Structural variants anchored after this coordinate
     insertions: Dict[str, IndelObservation] = field(default_factory=dict)
     deletions: Dict[str, IndelObservation] = field(default_factory=dict)
 
@@ -215,7 +213,7 @@ class HomopolymerRegion:
 class ConsensusPolicy:
     """Complete, immutable parameter configuration governing Block 6 decisions."""
     policy_id: str = "consensus_strict_v1"
-    policy_version: str = "1.1.0"
+    policy_version: str = "1.2.0"
     min_base_quality: int = 30
     min_mapping_quality: int = 30
     min_consensus_depth: int = 10
@@ -267,6 +265,23 @@ class ConsensusPolicy:
         )
     )
 
+    # Intervalli mascherati / blacklist per eteroplasmia (intervalli chiusi 1-based)
+    excluded_intervals: Tuple[Tuple[int, int], ...] = field(
+        default_factory=lambda: (
+            (3105, 3108),      # Gap artificiale storico 3107N della rCRS
+            (303, 315),        # Tratto omopolimerico poli-C HVS-II
+            (513, 524),        # Tratto omopolimerico AC/C HVS-III
+            (16184, 16193),    # Tratto omopolimerico poli-C HVS-I
+        )
+    )
+
+    def is_position_excluded(self, pos: int) -> bool:
+        """Restituisce True se la coordinata 1-based ricade in un intervallo escluso/blacklisted."""
+        for start, end in self.excluded_intervals:
+            if start <= pos <= end:
+                return True
+        return False
+
     def get_slippage_region(self, pos: int) -> Optional[HomopolymerRegion]:
         """Return the matching HomopolymerRegion if the locus falls into a tract, else None."""
         for r in self.slippage_regions:
@@ -309,6 +324,11 @@ class ConsensusPolicy:
 
         if not (0.0 < self.strand_bias_alpha < 1.0):
             raise ValueError(f"strand_bias_alpha must be in (0.0, 1.0), got {self.strand_bias_alpha}")
+
+        # Validazione limiti intervalli esclusi
+        for start, end in self.excluded_intervals:
+            if start > end or start <= 0:
+                raise ValueError(f"Intervallo escluso non valido: [{start}, {end}]")
 
 
 @dataclass(frozen=True)

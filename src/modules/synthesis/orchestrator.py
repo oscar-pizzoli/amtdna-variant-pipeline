@@ -2,7 +2,7 @@
 Block 8 Synthesis Orchestrator: Master coordinator governing end-to-end specimen
 synthesis, forensic provenance certification, procedure-based deliverable emission,
 and cohort-wide aggregation (multi-FASTA, master QC TSV, unified variant matrices).
-Enforces the "Verified Inputs Only" architectural paradigm.
+Enforces the "Verified Inputs Only" architectural paradigm and handles dynamic BAM passthrough.
 """
 
 import csv
@@ -25,6 +25,7 @@ from src.modules.synthesis.contract_aggregator import (
 )
 from src.modules.synthesis.models import (
     MUTATION_TSV_HEADERS,
+    SAMPLE_MASTER_BAM_TSV_HEADERS,
     SAMPLE_MASTER_TSV_HEADERS,
     CategorizedWarning,
     FinalVerificationReport,
@@ -64,6 +65,7 @@ class SequencingQCStatus(str, Enum):
     QC_PARTIAL = "QC_PARTIAL"
     QC_MISSING = "QC_MISSING"
     QC_INVALID = "QC_INVALID"
+    QC_NOT_APPLICABLE = "QC_NOT_APPLICABLE"
 
 
 class SynthesisOrchestrator:
@@ -226,7 +228,6 @@ class SynthesisOrchestrator:
 
                 ref_len = bam.get_reference_length(self.contig_name)
 
-                # Compute coverage with consensus official Phred threshold (Block 6)
                 a_counts, c_counts, g_counts, t_counts = bam.count_coverage(
                     self.contig_name, 0, ref_len, quality_threshold=self.min_base_quality
                 )
@@ -363,7 +364,6 @@ class SynthesisOrchestrator:
         is_gated = self.is_sample_gated(record)
         prov_map = {p.artifact_name: p for p in verification_report.artifact_checks}
 
-        # Resolve verified BAM with protocol awareness: rescaled if ancient and rescaling was executed, else dedup BAM
         if record.authenticity.rescaling_performed:
             bam_item = prov_map.get("rescaled_ancient_bam")
             if (not bam_item or bam_item.status not in {ProvenanceStatus.VERIFIED, ProvenanceStatus.UNANCHORED}) and not self.enforce_strict_provenance:
@@ -382,8 +382,12 @@ class SynthesisOrchestrator:
             )
             record.macro_complexes = MacroComplexCoverageSummary()
 
-        # Ingest Sequencing QC metrics
-        record.sequencing_qc, qc_status = self._extract_sequencing_qc(sample_id, contracts)
+        # Ingestione o bypass pulito di Sequencing QC
+        if record.is_bam_mode:
+            record.sequencing_qc = SequencingQCSummary()
+            qc_status = SequencingQCStatus.QC_NOT_APPLICABLE
+        else:
+            record.sequencing_qc, qc_status = self._extract_sequencing_qc(sample_id, contracts)
 
         # Resolve verified VCF and reconcile mutation catalog
         vcf_item = prov_map.get("variants_vcf")
@@ -442,7 +446,7 @@ class SynthesisOrchestrator:
         return record, verification_report, emitted_artifacts
 
     # --------------------------------------------------------------------------
-    # Cohort-Level Aggregation Pipeline (Stale-Checking & Provenance Anchored)
+    # Cohort-Level Aggregation Pipeline
     # --------------------------------------------------------------------------
     def _is_sample_stale(self, sample_id: str, contracts: ContractFileSet) -> bool:
         """Check if an on-disk sample report is outdated relative to its source contracts."""
@@ -465,13 +469,13 @@ class SynthesisOrchestrator:
     def run_cohort(self, sample_ids: Optional[List[str]] = None) -> Dict[str, Path]:
         """
         Aggregate all cohort deliverables across sample-partitioned folders:
-        - results/master_summary/cohort_qc_summary.tsv (48 columns)
+        - results/master_summary/cohort_qc_summary.tsv (adaptive 42 or 52 columns)
         - results/master_summary/cohort_master.json
         - results/fasta/cohort_canonical.fasta
         - results/fasta/cohort_heteroplasmy.fasta
         - results/haplogroups/cohort_haplogroups_summary.tsv
-        - results/mutations/cohort_mutation_catalog.tsv (Tidy, 1 row per mutation)
-        - results/mutations/cohort_mutations_summary.tsv (Horizontal: sample_id | hg | count | list)
+        - results/mutations/cohort_mutation_catalog.tsv
+        - results/mutations/cohort_mutations_summary.tsv
         """
         if not sample_ids:
             cohort_cfg_samples = self.config.get("cohort", {}).get("samples")
@@ -530,7 +534,6 @@ class SynthesisOrchestrator:
 
                     master_json_records[sid] = rec_dict
 
-                    # Read from sample-partitioned mutations folder: results/mutations/<sample_id>/
                     sample_mut_tsv = self.dir_muts / sid / f"{sid}.mutation_catalog.tsv"
                     if sample_mut_tsv.is_file():
                         with open(sample_mut_tsv, "r", encoding="utf-8") as mfp:
@@ -562,7 +565,6 @@ class SynthesisOrchestrator:
                         warn_str,
                     ])
 
-                    # Read from sample-partitioned fasta folder: results/fasta/<sample_id>/
                     can_fasta = self.dir_fasta / sid / f"{sid}.canonical.fasta"
                     if can_fasta.is_file():
                         with open(can_fasta, "r", encoding="utf-8") as sfp:
@@ -589,12 +591,17 @@ class SynthesisOrchestrator:
                     p.unlink(missing_ok=True)
             raise SynthesisOrchestrationError(f"Failed generating cohort multi-FASTA files: {err}") from err
 
-        # 2. Emit 48-column Master QC Summary TSV
+        # 2. Emit Master QC Summary TSV (adattamento dinamico a 42 colonne per BAM o 52 per FASTQ)
         cohort_summary_tsv = self.dir_master / "cohort_qc_summary.tsv"
-        self._write_atomic_tsv(cohort_summary_tsv, SAMPLE_MASTER_TSV_HEADERS, master_rows)
+        if master_rows and len(master_rows[0]) == len(SAMPLE_MASTER_BAM_TSV_HEADERS):
+            qc_summary_headers = SAMPLE_MASTER_BAM_TSV_HEADERS
+        else:
+            qc_summary_headers = SAMPLE_MASTER_TSV_HEADERS
+
+        self._write_atomic_tsv(cohort_summary_tsv, qc_summary_headers, master_rows)
         cohort_deliverables["cohort_qc_summary"] = cohort_summary_tsv
 
-        # 3. Emit Cohort Master JSON
+        # 3. Emit Cohort Master JSON (struttura pulita senza sequencing_qc in BAM mode)
         cohort_master_json = self.dir_master / "cohort_master.json"
         cohort_dump = {
             "project_name": self.config.get("project", {}).get("name", "ancient-modern-mtdna-pipeline"),
@@ -628,7 +635,7 @@ class SynthesisOrchestrator:
         self._write_atomic_tsv(cohort_muts_tsv, MUTATION_TSV_HEADERS, all_mutations_rows)
         cohort_deliverables["cohort_mutation_catalog"] = cohort_muts_tsv
 
-        # 6. Emit Cohort Horizontal Mutations Summary (sample_id | hg | count | list)
+        # 6. Emit Cohort Horizontal Mutations Summary
         cohort_mut_summary_tsv = self.dir_muts / "cohort_mutations_summary.tsv"
         mut_summary_headers = ["sample_id", "primary_haplogroup", "mutations_count", "mutations"]
         mut_summary_rows: List[List[str]] = []

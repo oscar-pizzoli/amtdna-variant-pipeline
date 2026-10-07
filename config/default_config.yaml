@@ -31,8 +31,8 @@ output:
 # ==============================================================================
 
 input:
-  data_type: "FASTQ"             # Raw sequence format: 'FASTQ' or 'BAM'
-  input_dir: "data/raw_fastq"    # Directory scanned for incoming sequence files
+  data_type: "BAM"             # Raw sequence format: 'FASTQ' or 'BAM'
+  input_dir: "data/raw_bam"    # Directory scanned for incoming sequence files
   layout: "AUTO"                 # Layout mode: 'AUTO' (sample-by-sample detection), 'PAIRED', or 'SINGLE'
   pairing_patterns:
     r1: ["_R1", "_1", ".R1", ".1"] # Recognized forward / mate 1 filename indicators
@@ -209,7 +209,7 @@ contamination:
     max_iterations: 10                # Maximum EM optimization cycles
     library_treatment: "NONE"         # Informs Schmutzi of library chemistry ('NONE', 'HALF', 'FULL')
     use_wrapped_reference: false      # Circular genome wrapping (false = linear reference rCRS)
-    use_container: "auto"             # Execution engine: 'auto', 'docker', 'singularity', or 'conda'
+    use_container: "none"             # Esecuzione diretta nell'ambiente Conda locale adna_qc
     container_engine: "docker"
     container_image: "quay.io/biocontainers/schmutzi:1.5.6--h9a82719_1"
 
@@ -267,6 +267,13 @@ consensus:
       UDG_HALF: 2                     # UDG-half libraries: filter mutations within terminal 2 bp
       UDG_FULL: 0                     # UDG-full libraries: zero end-distance penalty (damage enzymatically removed)
 
+    # Masked regions / Blacklist for heteroplasmy and systematic artifacts (1-based closed intervals)
+    excluded_intervals:
+      - [3105, 3111]                  # Gap artificiale storico 3107N della rCRS
+      - [303, 315]                    # Tratto omopolimerico poli-C in HVS-II
+      - [513, 524]                    # Tratto omopolimerico AC/C in HVS-III
+      - [16184, 16193]                # Tratto omopolimerico poli-C in HVS-I
+
   restricted_heteroplasmy:            # Gated thresholds applied when sample exhibits moderate contamination
     min_depth: 20                     # Elevated depth requirement
     min_alt_reads: 5                  # Elevated alternative read count
@@ -321,12 +328,12 @@ synthesis:
   enforce_strict_provenance: true     # If true, blocks delivery of critical files lacking sealed VERIFIED status
 
   deliverables:
-    emit_tsv_summary: true            # Export single-sample 48-column summary TSV ({sample}.summary.tsv)
+    emit_tsv_summary: true            # Export single-sample summary TSV ({sample}.summary.tsv)
     emit_mutations_catalog: true      # Export tidy tabular mutation catalog ({sample}.mutation_catalog.tsv)
     emit_json_master: true            # Export complete structured master record ({sample}.master.json)
     emit_markdown_sheets: true        # Render human-readable forensic Markdown report ({sample}.report.md)
     emit_cohort_fasta: true           # Concatenate cohort-wide multi-FASTA (canonical and IUPAC files)
-    emit_cohort_qc_summary: true      # Compile master 48-column cohort summary table (cohort_qc_summary.tsv)
+    emit_cohort_qc_summary: true      # Compile master cohort summary table (cohort_qc_summary.tsv)
     emit_cohort_mutations: true       # Compile unified tidy mutation catalog for whole project
 
   # Coordinate definitions for mitochondrial functional complexes (1-based, rCRS NC_012920.1)
