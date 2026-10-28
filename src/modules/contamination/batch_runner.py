@@ -579,7 +579,7 @@ class ContaminationBatchRunner:
         sample_map: Dict[str, Path] = {}
         ancient_map: Dict[str, bool] = {}
 
-        # Mapping and automatic detection of ancient/modern status from Block 4
+        # Mapping and robust automatic detection of ancient/modern status from Block 4 contracts
         for item in discovered_samples:
             s_id = str(item[0])
             b_path = Path(item[1])
@@ -588,20 +588,33 @@ class ContaminationBatchRunner:
             if len(item) >= 3:
                 ancient_map[s_id] = bool(item[2])
             else:
-                damage_json = PROJECT_ROOT / "operational_files" / "damage" / s_id / f"{s_id}.damage.json"
-                if not damage_json.is_file():
-                    damage_json = PROJECT_ROOT / "results" / "damage" / s_id / f"{s_id}.damage.json"
+                contract_candidates = [
+                    PROJECT_ROOT / "operational_files" / "damage" / s_id / f"{s_id}.block4_contract.json",
+                    PROJECT_ROOT / "operational_files" / "damage" / s_id / f"{s_id}.damage.json",
+                    PROJECT_ROOT / "results" / "damage" / s_id / f"{s_id}.block4_contract.json",
+                    PROJECT_ROOT / "results" / "damage" / s_id / f"{s_id}.damage.json",
+                ]
 
-                if damage_json.is_file():
+                resolved_contract = next((p for p in contract_candidates if p.is_file()), None)
+
+                if resolved_contract:
                     try:
-                        with open(damage_json, "r", encoding="utf-8") as f_d:
+                        with open(resolved_contract, "r", encoding="utf-8") as f_d:
                             dam_data = json.load(f_d)
-                            v = (
-                                dam_data.get("profile", {}).get("authentication_verdict")
+                            auth_status = str(
+                                dam_data.get("authentication_status")
+                                or dam_data.get("biological_type")
+                                or dam_data.get("profile", {}).get("authentication_verdict")
+                                or dam_data.get("profile", {}).get("authentication_status")
                                 or dam_data.get("verdict")
                                 or ""
+                            ).upper()
+
+                            is_ancient_sample = (
+                                "AUTHENTIC_ANCIENT" in auth_status
+                                or auth_status == "ANCIENT"
                             )
-                            ancient_map[s_id] = "AUTHENTIC_ANCIENT" in str(v).upper()
+                            ancient_map[s_id] = is_ancient_sample
                     except Exception:
                         ancient_map[s_id] = True
                 else:
@@ -719,6 +732,7 @@ class ContaminationBatchRunner:
                         reference_fasta_path=reference_fasta,
                         reference_contig=reference_contig,
                         reference_length_bp=reference_length_bp,
+                        is_ancient=is_anc,
                     )
                     fut = p2_pool.submit(
                         cls._run_phase2_schmutzi_task,

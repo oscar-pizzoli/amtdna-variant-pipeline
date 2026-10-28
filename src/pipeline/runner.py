@@ -117,6 +117,8 @@ class EndToEndPipelineRunner:
         config_path: Optional[Path] = None,
         cpu_fraction_override: Optional[float] = None,
         host_cores_override: Optional[int] = None,
+        data_type_override: Optional[str] = None,
+        cache_mode_override: Optional[str] = None,
     ) -> None:
         self.config_path = config_path or (PROJECT_ROOT / "config" / "default_config.yaml")
         with open(self.config_path, "r", encoding="utf-8") as f:
@@ -136,8 +138,13 @@ class EndToEndPipelineRunner:
         self.res_cfg = self.config.get("resources", {})
         self.out_cfg = self.config.get("output", {})
 
-        # Input data format ('FASTQ' or 'BAM')
-        self.data_type = str(self.input_cfg.get("data_type", "FASTQ")).upper()
+        # Override data format from CLI or fallback to YAML
+        raw_type = data_type_override or self.input_cfg.get("data_type", "FASTQ")
+        self.data_type = str(raw_type).upper()
+        
+        # Cache handling policy from YAML ('prompt', 'reuse', or 'overwrite') with optional CLI override
+        raw_cache_mode = cache_mode_override or self.out_cfg.get("cache_mode", "prompt")
+        self.cache_mode = str(raw_cache_mode).lower()
 
         # Operational workspace vs final release deliverables
         self.results_dir = self._resolve_path(self.out_cfg.get("results_dir", "results"), PROJECT_ROOT / "results")
@@ -312,6 +319,87 @@ class EndToEndPipelineRunner:
         )
 
     # --------------------------------------------------------------------------
+    # Cache Inspection & Interactive Resolution
+    # --------------------------------------------------------------------------
+    def handle_cache_policy(
+        self,
+        cache_mode: str = "prompt",
+        target_sample_ids: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Detects existing cached artifacts in operational_files/ and enforces
+        the requested cache policy ('prompt', 'reuse', or 'overwrite').
+        """
+        detected_cache = StageTracker.inspect_operational_cache(
+            self.operational_files_dir,
+            target_sample_ids=target_sample_ids,
+        )
+
+        if not detected_cache:
+            logger.info("No pre-existing cache artifacts detected in operational_files/.")
+            return "reuse"
+
+        mode = str(cache_mode or "prompt").lower()
+
+        if mode == "overwrite":
+            logger.info("Cache policy set to OVERWRITE: purging existing cached artifacts...")
+            StageTracker.purge_operational_cache(
+                self.operational_files_dir,
+                results_dir=self.results_dir,
+                target_sample_ids=target_sample_ids,
+            )
+            return "overwrite"
+
+        if mode == "reuse":
+            logger.info(
+                f"Cache policy set to REUSE: retaining cached artifacts for {len(detected_cache)} sample(s)."
+            )
+            return "reuse"
+
+        # Interactive prompt mode ('prompt')
+        if not sys.stdin.isatty():
+            logger.info(
+                f"Non-interactive terminal detected with {len(detected_cache)} cached sample(s); defaulting to REUSE."
+            )
+            return "reuse"
+
+        print("\n" + "!" * 115)
+        print(f"⚠️  EXISTING CACHE DETECTED IN: {self.operational_files_dir}")
+        print("-" * 115)
+        for s_id, stages in detected_cache.items():
+            stages_str = ", ".join(stages)
+            print(f"   • Sample '{s_id}': [{stages_str}]")
+        print("-" * 115)
+        print("How would you like to proceed?")
+        print("   [1] Reuse cache     - Resume execution using valid cached stages (Default)")
+        print("   [2] Overwrite cache - Purge cached artifacts and recompute everything from scratch")
+        print("   [3] Stop / Abort    - Cancel execution and exit immediately")
+        print("!" * 115)
+
+        while True:
+            try:
+                user_choice = input("\nSelect option [1/2/3] (press Enter for 1): ").strip().lower()
+            except EOFError:
+                user_choice = "1"
+
+            if user_choice in ("", "1", "reuse", "r", "u"):
+                logger.info("User selected: REUSE existing cache.")
+                return "reuse"
+            elif user_choice in ("2", "overwrite", "o", "purge", "p"):
+                logger.info("User selected: OVERWRITE cache. Purging operational cache...")
+                StageTracker.purge_operational_cache(
+                    self.operational_files_dir,
+                    results_dir=self.results_dir,
+                    target_sample_ids=target_sample_ids,
+                )
+                return "overwrite"
+            elif user_choice in ("3", "stop", "abort", "exit", "q"):
+                logger.info("User selected: STOP/ABORT. Exiting pipeline.")
+                sys.exit(0)
+            else:
+                print("Invalid selection. Please enter 1 (Reuse), 2 (Overwrite), or 3 (Stop).")
+
+    # --------------------------------------------------------------------------
     # Block 1: Reference Genome Validation
     # --------------------------------------------------------------------------
     def validate_reference(self) -> ReferenceInfo:
@@ -368,7 +456,14 @@ class EndToEndPipelineRunner:
         if not input_dir.is_dir():
             raise PipelineExecutionError(f"BAM input directory does not exist: {input_dir}")
 
-        bam_files = sorted(list(input_dir.glob("*.bam")))
+        bam_files = sorted(
+            list(input_dir.glob("*.bam"))
+            + list(input_dir.glob("*.BAM"))
+            + list(input_dir.glob("*/*.bam"))
+            + list(input_dir.glob("*/*.BAM"))
+        )
+        bam_files = sorted(list({p.resolve(): p for p in bam_files}.values()))
+
         if not bam_files:
             raise PipelineExecutionError(f"No BAM files found in {input_dir}")
 
@@ -378,6 +473,7 @@ class EndToEndPipelineRunner:
         min_depth_gate = float(qc_thresh.get("min_mean_depth", 3.0))
         min_b3x_gate = float(qc_thresh.get("min_breadth_3x_fraction", 0.80))
         max_dup_gate = float(qc_thresh.get("max_duplication_rate_fraction", 0.85))
+        min_map_rate_gate = float(qc_thresh.get("min_mapping_rate_pct", 0.10))
 
         aln_policy = AlignmentFilterPolicy(
             dedup_mode=DedupMode(self.dedup_cfg.get("mode", "both").lower()),
@@ -390,6 +486,7 @@ class EndToEndPipelineRunner:
             min_mean_depth=min_depth_gate,
             min_breadth_3x_fraction=min_b3x_gate,
             max_duplication_rate_fraction=max_dup_gate,
+            min_mapping_rate_pct=min_map_rate_gate,
         )
 
         for bam_p in bam_files:
@@ -399,7 +496,6 @@ class EndToEndPipelineRunner:
             sample_id = bam_p.stem.replace(".filtered.dedup", "").replace(".filtered", "").replace(".dedup", "").replace(".sorted", "")
             logger.info(f"[*] Ingesting BAM for sample: {sample_id} ({bam_p.name})")
 
-            # Ensure valid index
             bai_p = Path(f"{bam_p}.bai")
             alt_bai_p = bam_p.with_suffix(".bai")
             if not (bai_p.is_file() or alt_bai_p.is_file()):
@@ -416,7 +512,6 @@ class EndToEndPipelineRunner:
                 except OSError:
                     shutil.copy2(bam_p, target_bam)
 
-            # Compute coverage metrics
             mean_d, b1x, b3x, b5x, b10x, mapped_mt = 0.0, 0.0, 0.0, 0.0, 0.0, 0
             try:
                 res_idx = subprocess.run(["samtools", "idxstats", str(target_bam)], capture_output=True, text=True, check=True)
@@ -630,6 +725,7 @@ class EndToEndPipelineRunner:
         min_depth_gate = float(qc_thresh.get("min_mean_depth", 3.0))
         min_b3x_gate = float(qc_thresh.get("min_breadth_3x_fraction", 0.80))
         max_dup_gate = float(qc_thresh.get("max_duplication_rate_fraction", 0.85))
+        min_map_rate_gate = float(qc_thresh.get("min_mapping_rate_pct", 0.10))
 
         aln_policy = AlignmentFilterPolicy(
             dedup_mode=DedupMode(self.dedup_cfg.get("mode", "both").lower()),
@@ -642,6 +738,7 @@ class EndToEndPipelineRunner:
             min_mean_depth=min_depth_gate,
             min_breadth_3x_fraction=min_b3x_gate,
             max_duplication_rate_fraction=max_dup_gate,
+            min_mapping_rate_pct=min_map_rate_gate,
         )
 
         final_bam = legacy_dir / f"{s_id}.filtered.dedup.bam"
@@ -822,7 +919,8 @@ class EndToEndPipelineRunner:
             input_bam_sha256,
         )
 
-        active_cache_json = damage_model_json if damage_model_json.is_file() else damage_json
+        # Prefer full damage.json over damage_model.json when rehydrating DamageResult
+        active_cache_json = damage_json if damage_json.is_file() else damage_model_json
 
         if tracker.is_stage_valid("DAMAGE_AUTHENTICATION", [active_cache_json, b4_contract_json], damage_composite_hash):
             logger.info(f"[{sample_id}] Stage DAMAGE_AUTHENTICATION cached.")
@@ -865,7 +963,7 @@ class EndToEndPipelineRunner:
 
         self._ensure_block4_contract(b4_contract_json, sample_id, dam_res, input_bam, force_overwrite=True)
 
-        target_model_file = dam_res.outputs.damage_model_json or damage_model_json
+        target_model_file = damage_json if damage_json.is_file() else (dam_res.outputs.damage_model_json or damage_model_json)
         tracker.mark_success(
             "DAMAGE_AUTHENTICATION",
             time.perf_counter() - t0,
@@ -873,6 +971,30 @@ class EndToEndPipelineRunner:
             composite_hash=damage_composite_hash,
         )
         return dam_res, b4_contract_json
+
+    @staticmethod
+    def _extract_verdict_with_contract_fallback(dam_res: DamageResult, b4_contract_path: Path) -> str:
+        """
+        Extracts the Block 4 authenticity verdict, prioritizing the formal Block 4
+        contract JSON if DamageResult rehydration from damage_model.json defaulted to INCONCLUSIVE.
+        """
+        verdict = "AUTHENTICITY_UNSUPPORTED"
+        if getattr(dam_res, "profile", None) and getattr(dam_res.profile, "authentication_verdict", None):
+            verdict = getattr(dam_res.profile.authentication_verdict, "value", str(dam_res.profile.authentication_verdict))
+        elif getattr(dam_res, "status", None):
+            verdict = getattr(dam_res.status, "value", str(dam_res.status))
+
+        if verdict.upper() in ("INCONCLUSIVE", "AUTHENTICITY_UNSUPPORTED", "PASS", "WARN") and b4_contract_path.is_file():
+            try:
+                with open(b4_contract_path, "r", encoding="utf-8") as f_c:
+                    c_data = json.load(f_c)
+                contract_auth = c_data.get("authentication_status")
+                if contract_auth and str(contract_auth).upper() not in ("INCONCLUSIVE", "AUTHENTICITY_UNSUPPORTED"):
+                    verdict = str(contract_auth)
+            except Exception:
+                pass
+
+        return verdict
 
     def _ensure_block4_contract(
         self,
@@ -1261,7 +1383,7 @@ class EndToEndPipelineRunner:
             try:
                 resolved_gating_action = GatingAction(gating_action_val)
             except ValueError:
-                resolved_gating_action = GatingAction.RESTRICT_HETEROPUTER_CALLING if hasattr(GatingAction, "STANDARD_CALLING") else GatingAction.RESTRICT_HETEROPLASMY
+                resolved_gating_action = GatingAction.RESTRICT_HETEROPLASMY
 
             qc = ConsensusQC(
                 sample_id=sample_id,
@@ -1716,8 +1838,9 @@ class EndToEndPipelineRunner:
     # --------------------------------------------------------------------------
     # Main Cohort Execution Loop
     # --------------------------------------------------------------------------
-    def execute_cohort(self, input_dir: Path) -> None:
+    def execute_cohort(self, input_dir: Path, cache_mode: Optional[str] = None) -> None:
         t_global0 = time.perf_counter()
+        effective_cache_mode = (cache_mode or self.cache_mode).lower()
 
         print("=" * 115)
         print("🚀 EXECUTING COMPLETE MODULAR mtDNA PIPELINE (BLOCKS 1 -> 8)")
@@ -1725,7 +1848,11 @@ class EndToEndPipelineRunner:
         print(f"[*] Upstream Threads/Job : {self.alignment_threads} threads")
         print(f"[*] Schmutzi Workers     : {self.resource_alloc.max_schmutzi_workers} slots ({self.resource_alloc.threads_per_schmutzi_instance} threads/slot)")
         print(f"[*] Input Format (YAML)  : {self.data_type}")
+        print(f"[*] Cache Policy (YAML)  : {effective_cache_mode.upper()}")
         print("=" * 115)
+
+        # Pre-flight Cache Inspection & Resolution
+        self.handle_cache_policy(cache_mode=effective_cache_mode)
 
         # Block 1
         self.validate_reference()
@@ -1755,12 +1882,7 @@ class EndToEndPipelineRunner:
                     dam_res, b4_contract = self.run_damage(s_id, aln_res)
                     b4_contracts[s_id] = b4_contract
 
-                    verdict = "AUTHENTICITY_UNSUPPORTED"
-                    if getattr(dam_res, "profile", None) and getattr(dam_res.profile, "authentication_verdict", None):
-                        verdict = getattr(dam_res.profile.authentication_verdict, "value", str(dam_res.profile.authentication_verdict))
-                    elif getattr(dam_res, "status", None):
-                        verdict = getattr(dam_res.status, "value", str(dam_res.status))
-
+                    verdict = self._extract_verdict_with_contract_fallback(dam_res, b4_contract)
                     is_ancient = "AUTHENTIC_ANCIENT" in verdict.upper()
                     sample_types[s_id] = "ANCIENT" if is_ancient else "MODERN"
                     unrescaled_bams_for_block5.append((s_id, final_bam, is_ancient))
@@ -1792,12 +1914,7 @@ class EndToEndPipelineRunner:
                     dam_res, b4_contract = self.run_damage(s_id, aln_res)
                     b4_contracts[s_id] = b4_contract
 
-                    verdict = "AUTHENTICITY_UNSUPPORTED"
-                    if getattr(dam_res, "profile", None) and getattr(dam_res.profile, "authentication_verdict", None):
-                        verdict = getattr(dam_res.profile.authentication_verdict, "value", str(dam_res.profile.authentication_verdict))
-                    elif getattr(dam_res, "status", None):
-                        verdict = getattr(dam_res.status, "value", str(dam_res.status))
-
+                    verdict = self._extract_verdict_with_contract_fallback(dam_res, b4_contract)
                     is_ancient = "AUTHENTIC_ANCIENT" in verdict.upper()
                     sample_types[s_id] = "ANCIENT" if is_ancient else "MODERN"
                     unrescaled_bams_for_block5.append((s_id, final_bam, is_ancient))
@@ -1932,6 +2049,9 @@ class EndToEndPipelineRunner:
             for f_id, f_err in failed_samples.items():
                 print(f"    - {f_id}: {f_err}")
             print("!" * 125)
+            raise PipelineExecutionError(
+                f"Cohort execution completed with {len(failed_samples)} failed sample(s): {list(failed_samples.keys())}"
+            )
 
         print("=" * 125)
         print("\n[*] Exported Master Deliverables (Block 8):")

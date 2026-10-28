@@ -22,6 +22,7 @@ resources:
 output:
   results_dir: "results"                     # Final sanitized deliverable directory for end users
   operational_files_dir: "operational_files" # Intermediate operational working directory for tools and contracts
+  cache_mode: "prompt"                       # Cache handling policy: 'prompt' (interactive ask), 'reuse' (keep valid cache), or 'overwrite' (purge and recompute)
   save_intermediate_bams: false              # If true, keeps non-deduplicated and non-rescaled intermediate BAMs
   compress_outputs: true                     # Apply bgzip/gzip compression to final deliverable files
 
@@ -31,21 +32,23 @@ output:
 # ==============================================================================
 
 input:
-  data_type: "BAM"             # Raw sequence format: 'FASTQ' or 'BAM'
-  input_dir: "data/raw_bam"    # Directory scanned for incoming sequence files
-  layout: "AUTO"                 # Layout mode: 'AUTO' (sample-by-sample detection), 'PAIRED', or 'SINGLE'
+  data_type: "FASTQ"                     # Raw sequence format: 'FASTQ' or 'BAM'
+  raw_bam_dir: "data/raw_bam"            # Dedicated target folder for BAM inputs
+  raw_fastq_dir: "data/raw_fastq"        # Dedicated target folder for FASTQ inputs
+  input_dir: null                        # Overrides default if set; null auto-routes via data_type
+  layout: "AUTO"                         # Layout mode: 'AUTO', 'PAIRED', or 'SINGLE'
   pairing_patterns:
-    r1: ["_R1", "_1", ".R1", ".1"] # Recognized forward / mate 1 filename indicators
-    r2: ["_R2", "_2", ".R2", ".2"] # Recognized reverse / mate 2 filename indicators
-  allowed_extensions:            # Recognized sequence archive extensions
+    r1: ["_R1", "_1", ".R1", ".1"]
+    r2: ["_R2", "_2", ".R2", ".2"]
+  allowed_extensions:
     - ".fastq.gz"
     - ".fq.gz"
     - ".fastq"
     - ".fq"
-  allow_missing_mates: false     # Fail-closed policy: reject sample if an expected mate file is missing
+  allow_missing_mates: false
 
 integrity:
-  mode: "fast"                   # Input verification mode: 'fast' (file size + header) or 'strict' (full SHA-256)
+  mode: "strict"                   # Input verification mode: 'fast' (file size + header) or 'strict' (full SHA-256)
 
 reference:
   fasta_path: "data/reference/rCRS.fasta"  # Physical path to the rCRS mitochondrial reference FASTA
@@ -108,6 +111,7 @@ filtering:
     inspect_mapper_tags: false   # Parse aligner-specific multi-mapping tags (XT:A:U, XA:Z)
 
   thresholds:
+    min_mapping_rate_pct: 0.10          # Gate: Warn only if mapping rate falls below 0.10% on shotgun WGS
     min_breadth_3x_fraction: 0.80       # Gate: Minimum 80% of genome covered by >= 3 reads
     max_duplication_rate_fraction: 0.85 # Alert: Flag sample if duplicate reads exceed 85%
     min_mean_depth: 3.0                 # Gate: Hard minimum mean coverage depth required to continue
@@ -205,11 +209,11 @@ contamination:
 
   schmutzi:
     database_path: "data/reference/schmutzi_db/197" # Path to allele frequency database of potential contaminants
-    threads: 6                        # Dedicated threads for iterative Bayesian decontamination
+    threads: 3                        # Dedicated threads for iterative Bayesian decontamination
     max_iterations: 10                # Maximum EM optimization cycles
     library_treatment: "NONE"         # Informs Schmutzi of library chemistry ('NONE', 'HALF', 'FULL')
     use_wrapped_reference: false      # Circular genome wrapping (false = linear reference rCRS)
-    use_container: "none"             # Esecuzione diretta nell'ambiente Conda locale adna_qc
+    use_container: "none"             # Direct execution in local adna_qc Conda environment
     container_engine: "docker"
     container_image: "quay.io/biocontainers/schmutzi:1.5.6--h9a82719_1"
 
@@ -269,10 +273,10 @@ consensus:
 
     # Masked regions / Blacklist for heteroplasmy and systematic artifacts (1-based closed intervals)
     excluded_intervals:
-      - [3105, 3111]                  # Gap artificiale storico 3107N della rCRS
-      - [303, 315]                    # Tratto omopolimerico poli-C in HVS-II
-      - [513, 524]                    # Tratto omopolimerico AC/C in HVS-III
-      - [16184, 16193]                # Tratto omopolimerico poli-C in HVS-I
+      - [3105, 3111]                  # Historical artificial 3107N gap in rCRS
+      - [303, 315]                    # HVS-II poly-C homopolymeric tract
+      - [513, 524]                    # HVS-III AC/C repeat tract
+      - [16184, 16193]                # HVS-I poly-C homopolymeric tract
 
   restricted_heteroplasmy:            # Gated thresholds applied when sample exhibits moderate contamination
     min_depth: 20                     # Elevated depth requirement
