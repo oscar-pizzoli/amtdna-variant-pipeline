@@ -73,7 +73,7 @@ class DamageQuantifierEngine:
                 bam_sq = dict(zip(bam.references, bam.lengths))
                 fa_sq = dict(zip(fa.references, fa.lengths))
 
-                # Verifica che i contig nel BAM siano presenti nel riferimento con uguale lunghezza
+                # Verify that all contigs in BAM exist in the reference FASTA with identical lengths
                 for contig, bam_len in bam_sq.items():
                     if contig not in fa_sq:
                         raise DamageQuantifierError(
@@ -107,7 +107,7 @@ class DamageQuantifierEngine:
         if not misinc_path.is_file() or misinc_path.stat().st_size == 0:
             raise DamageQuantifierError(f"misincorporation.txt missing or empty: {misinc_path}")
 
-        # Inizializzazione contenitori accumulati (posizioni 1..window_length)
+        # Initialize accumulation arrays (positions 1..window_length)
         c_ref_5p = [0] * (window_length + 1)
         ct_mut_5p = [0] * (window_length + 1)
         g_ref_3p = [0] * (window_length + 1)
@@ -122,7 +122,7 @@ class DamageQuantifierEngine:
                     if not row or not row[0].strip():
                         continue
 
-                    # Identificazione e normalizzazione dell'header
+                    # Header identification and field normalization
                     if row[0].startswith("#") or "End" in row or "Pos" in row or "Chr" in row:
                         header = [col.lstrip("#").strip().upper() for col in row]
                         continue
@@ -141,13 +141,13 @@ class DamageQuantifierEngine:
                     if pos_val < 1 or pos_val > window_length:
                         continue
 
-                    # Estrazione conteggi C->T e G->A dalle colonne specifiche di mapDamage
-                    # Colonne tipiche: C>T, G>A, C, G, Total, o A, C, G, T
+                    # Extract C->T and G->A counts from mapDamage mismatch columns
+                    # Standard columns: C>T, G>A, C, G, Total, or individual base counts A, C, G, T
                     try:
                         ct_count = int(row_dict.get("C>T", 0))
                         ga_count = int(row_dict.get("G>A", 0))
                         
-                        # Denominatori: se la riga riporta i conteggi della base di riferimento (C per 5', G per 3')
+                        # Denominators: check whether line specifies reference base context
                         base_ref = row_dict.get("BASE", "").upper()
                         total_col = int(row_dict.get("TOTAL", 0)) if "TOTAL" in row_dict else 0
                         
@@ -161,19 +161,19 @@ class DamageQuantifierEngine:
                     # 5' End Accumulation (C -> T)
                     if "5p" in end_val:
                         ct_mut_5p[pos_val] += ct_count
-                        # Calcolo denominatore C di riferimento
+                        # Compute reference C denominator
                         if base_ref == "C" and total_col > 0:
                             c_ref_5p[pos_val] += total_col
                         elif base_ref == "C":
                             c_ref_5p[pos_val] += (cnt_a + cnt_c + cnt_g + cnt_t)
                         else:
-                            # Se non è separato per riga di base di riferimento, il totale dei siti C è C_unmut + C>T + altri mismatch da C
+                            # If lines are not split by base context, total C sites = C_unmutated + C>T
                             c_ref_5p[pos_val] += cnt_c + ct_count
 
                     # 3' End Accumulation (G -> A)
                     elif "3p" in end_val:
                         ga_mut_3p[pos_val] += ga_count
-                        # Calcolo denominatore G di riferimento
+                        # Compute reference G denominator
                         if base_ref == "G" and total_col > 0:
                             g_ref_3p[pos_val] += total_col
                         elif base_ref == "G":
@@ -184,7 +184,7 @@ class DamageQuantifierEngine:
         except Exception as exc:
             raise DamageQuantifierError(f"Error parsing misincorporation file {misinc_path.name}: {exc}") from exc
 
-        # Costruzione vettori e frazioni
+        # Construct profiles, counts, and observed frequency vectors
         c_to_t_profile: List[float] = []
         g_to_a_profile: List[float] = []
         c_to_t_obs: List[int] = []
@@ -257,7 +257,7 @@ class DamageQuantifierEngine:
                     if not parts:
                         continue
 
-                    # Identificazione header
+                    # Header detection
                     if "Length" in parts or "Occurences" in parts or "Std" in parts:
                         header = [p.strip().lower() for p in parts]
                         continue
@@ -267,11 +267,11 @@ class DamageQuantifierEngine:
                             ln = int(parts[header.index("length")])
                             cnt = int(parts[header.index("occurences")])
                         elif len(parts) >= 3:
-                            # Formato standard mapDamage 2.2+: [Std, Length, Occurences]
+                            # Standard format mapDamage 2.2+: [Std, Length, Occurences]
                             ln = int(parts[1])
                             cnt = int(parts[2])
                         elif len(parts) == 2:
-                            # Formato compatto: [Length, Count]
+                            # Compact format: [Length, Count]
                             ln = int(parts[0])
                             cnt = int(parts[1])
                         else:
@@ -295,7 +295,7 @@ class DamageQuantifierEngine:
 
             mean_len = float(np.sum(lengths_arr * counts_arr) / total_fragments)
 
-            # Quantili ponderati
+            # Calculate weighted quantiles
             sort_idx = np.argsort(lengths_arr)
             sorted_lengths = lengths_arr[sort_idx]
             sorted_counts = counts_arr[sort_idx]
@@ -327,7 +327,7 @@ class DamageQuantifierEngine:
         cls,
         summ_stat_path: Path,
     ) -> BayesianDamageParameters:
-        """Parses MCMC summary statistics from Stats_out_MCMC_iter_summ_stat.csv with real convergence checks.
+        """Parses MCMC summary statistics from Stats_out_MCMC_iter_summ_stat.csv with convergence validation.
 
         Args:
             summ_stat_path: Path to Stats_out_MCMC_iter_summ_stat.csv file.
@@ -351,7 +351,7 @@ class DamageQuantifierEngine:
                         header = [c.strip().lower() for c in row]
                         continue
 
-                    # Struttura mapDamage: Parameter / Stat / Mean / Median / 2.5% / 97.5% / Std
+                    # mapDamage row structure: Parameter / Stat / Mean / Median / 2.5% / 97.5% / Std
                     row_dict = dict(zip(header, [c.strip() for c in row]))
                     param_name = row_dict.get("param", row_dict.get("parameter", row[0])).strip().lower()
 
@@ -362,7 +362,7 @@ class DamageQuantifierEngine:
                                     return float(d[key])
                                 except ValueError:
                                     pass
-                        # Fallback al secondo elemento se colonna non nominata
+                        # Fallback to second column if header fields are unlabelled
                         if len(row_list) > 1:
                             try:
                                 return float(row_list[1])
@@ -385,8 +385,7 @@ class DamageQuantifierEngine:
                     elif "loglik" in param_name or "log_likelihood" in param_name or "log-likelihood" in param_name:
                         params.model_log_likelihood = val
 
-            # Criterio di convergenza basato sulla presenza di tutti i parametri cardinali
-            # e assenza di parametri divergenze/NaN/negativi
+            # Verify presence of all cardinal parameters within theoretical probability bounds [0.0, 1.0]
             if (
                 params.lambda_param is not None
                 and params.delta_s is not None
@@ -446,7 +445,7 @@ class DamageQuantifierEngine:
         stdout_log = log_dir / f"{sample_id}.mapdamage.log"
         stderr_log = log_dir / f"{sample_id}.mapdamage.err"
 
-        # 2. Composizione Comando (Senza --rescale, solo quantificazione e stima bayesiana)
+        # 2. Command invocation (statistical quantification and Bayesian fit only, without --rescale)
         cmd = [
             binary,
             "-i", str(input_bam),
@@ -463,7 +462,7 @@ class DamageQuantifierEngine:
             f"(window={policy.terminal_positions_to_profile} bp, library={policy.library_treatment.value})..."
         )
 
-        # 3. Esecuzione Processo
+        # 3. Process Execution
         try:
             with open(stdout_log, "w", encoding="utf-8") as out_f, open(stderr_log, "w", encoding="utf-8") as err_f:
                 res = subprocess.run(cmd, stdout=out_f, stderr=err_f, check=False)
@@ -475,7 +474,7 @@ class DamageQuantifierEngine:
                 f"mapDamage failed with exit code {res.returncode}. Inspect error log: {stderr_log}"
             )
 
-        # 4. Mappatura File di Output
+        # 4. Output File Mapping
         misinc_file = out_sample_dir / "misincorporation.txt"
         lg_dist_file = out_sample_dir / "lgdistribution.txt"
         plot_pdf = out_sample_dir / "Fragmisincorporation_plot.pdf"
@@ -493,7 +492,7 @@ class DamageQuantifierEngine:
             damage_plot_pdf=plot_pdf if plot_pdf.is_file() else None,
         )
 
-        # 5. Parsing Dati e Statistiche
+        # 5. Extract profiles and empirical parameters
         terminal_freqs, _ = cls.parse_misincorporation_file(
             misinc_path=misinc_file,
             window_length=policy.terminal_positions_to_profile,

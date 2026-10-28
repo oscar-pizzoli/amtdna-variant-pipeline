@@ -1,5 +1,6 @@
 """Adapter trimming, conservative read merging, physical output verification, and metrics extraction via AdapterRemoval."""
 
+import gzip
 import logging
 from pathlib import Path
 import re
@@ -68,13 +69,13 @@ class PreprocessingEngine:
         warnings_list: List[str],
     ) -> None:
         """Enforces arithmetic consistency and structural invariants on parsed AdapterRemoval metrics."""
-        # 1. Controllo parità per campioni paired-end
+        # 1. Parity check for paired-end runs
         if is_paired and metrics.raw_total_reads is not None and metrics.raw_total_reads % 2 != 0:
             warnings_list.append(
                 f"Structural anomaly: raw_total_reads ({metrics.raw_total_reads}) is odd in a Paired-End run."
             )
 
-        # 2. Conservazione delle letture biologiche (Raw ≈ Surviving + Discarded)
+        # 2. Biological read conservation check (Raw ≈ Surviving + Discarded)
         if (
             metrics.raw_total_reads is not None
             and metrics.surviving_original_reads is not None
@@ -87,6 +88,62 @@ class PreprocessingEngine:
                     f"surviving ({metrics.surviving_original_reads:,}) + discarded ({metrics.discarded_reads:,}) "
                     f"[Delta: {metrics.raw_total_reads - accounted_reads}]."
                 )
+
+    @classmethod
+    def compute_post_trimming_qc(
+        cls,
+        fastq_paths: List[Optional[Path]],
+        quality_base: int = 33,
+        sample_reads: int = 25000,
+    ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+        """Fast byte-level sampling of FASTQ files to compute GC%, Q20, Q30, and mean length."""
+        total_bases = 0
+        gc_bases = 0
+        q20_bases = 0
+        q30_bases = 0
+        total_len = 0
+        inspected_reads = 0
+        q_thresh_20 = quality_base + 20
+        q_thresh_30 = quality_base + 30
+
+        for p in fastq_paths:
+            if not p or not Path(p).is_file() or Path(p).stat().st_size == 0:
+                continue
+            open_fn = gzip.open if str(p).lower().endswith((".gz", ".bgz")) else open
+            try:
+                with open_fn(Path(p), "rb") as stream:
+                    while inspected_reads < sample_reads:
+                        header = stream.readline()
+                        if not header:
+                            break
+                        seq = stream.readline().rstrip(b"\r\n")
+                        plus = stream.readline()
+                        qual = stream.readline().rstrip(b"\r\n")
+                        if not qual:
+                            break
+
+                        inspected_reads += 1
+                        s_len = len(seq)
+                        total_bases += s_len
+                        total_len += s_len
+
+                        # Vectorized byte counts in C
+                        gc_bases += seq.count(b"G") + seq.count(b"C") + seq.count(b"g") + seq.count(b"c")
+                        q20_bases += sum(1 for b in qual if b >= q_thresh_20)
+                        q30_bases += sum(1 for b in qual if b >= q_thresh_30)
+            except Exception as exc:
+                logger.debug(f"Sampling QC interrupted on {p}: {exc}")
+                continue
+
+        if total_bases == 0:
+            return None, None, None, None
+
+        gc_pct = round((gc_bases / total_bases) * 100.0, 2)
+        q20_rate = round(q20_bases / total_bases, 4)
+        q30_rate = round(q30_bases / total_bases, 4)
+        mean_len = round(total_len / inspected_reads, 2) if inspected_reads > 0 else None
+
+        return gc_pct, q20_rate, q30_rate, mean_len
 
     @classmethod
     def parse_adapterremoval_settings(
@@ -109,7 +166,7 @@ class PreprocessingEngine:
             return metrics
 
         try:
-            # 1. Conteggi Raw
+            # 1. Raw read counts
             raw_pairs_match = re.search(
                 r"Total number of (?:read pairs|read-pairs|pairs):\s+(\d+)",
                 content,
@@ -131,7 +188,7 @@ class PreprocessingEngine:
             else:
                 warnings_list.append("Could not parse raw read counts from .settings file.")
 
-            # 2. Frammenti Merged / Collapsed
+            # 2. Merged / collapsed fragments
             collapsed_full = re.search(
                 r"Number of full-length collapsed pairs:\s+(\d+)",
                 content,
@@ -157,7 +214,7 @@ class PreprocessingEngine:
             else:
                 metrics.merged_fragments = None
 
-            # 3. Coppie PE sopravvissute non mergiate
+            # 3. Surviving unmerged PE pairs
             retained_pairs_match = re.search(
                 r"Number of (?:retained mate-pairs|retained pairs|retained mate pairs):\s+(\d+)",
                 content,
@@ -187,7 +244,7 @@ class PreprocessingEngine:
             else:
                 metrics.singleton_reads = 0
 
-            # 5. Letture Scartate
+            # 5. Discarded reads
             discarded_match = re.search(
                 r"Number of discarded reads:\s+(\d+)",
                 content,
@@ -198,7 +255,7 @@ class PreprocessingEngine:
             else:
                 metrics.discarded_reads = None
 
-            # 6. Calcolo metriche derivate
+            # 6. Derived metrics computation
             surv_pairs = metrics.surviving_read_pairs or 0
             m_frags = metrics.merged_fragments or 0
             singles = metrics.singleton_reads or 0
@@ -206,7 +263,7 @@ class PreprocessingEngine:
             metrics.surviving_original_reads = (surv_pairs * 2) + (m_frags * 2) + singles
             metrics.surviving_sequenced_fragments = surv_pairs + m_frags + singles
 
-            # 7. Frazioni di Merging (Strict None preservation)
+            # 7. Merging fractions (Strict None preservation)
             if is_paired:
                 if metrics.raw_read_pairs is not None and metrics.merged_fragments is not None:
                     if metrics.raw_read_pairs > 0:
@@ -227,6 +284,53 @@ class PreprocessingEngine:
             else:
                 metrics.merged_fraction_raw = None
                 metrics.merged_fraction_surviving = None
+
+            # 8. Adapter trimming percentage with polymorphic regex and biological fallback
+            m_adapt_pairs = re.search(
+                r"Number of (?:well-aligned |retained )?(?:read pairs|mate-pairs|read-pairs|pairs) with adapter(?: sequence)?:\s+(\d+)",
+                content,
+                re.IGNORECASE,
+            )
+            m_adapt_reads = re.search(
+                r"Number of reads with adapter(?: sequence)?:\s+(\d+)",
+                content,
+                re.IGNORECASE,
+            )
+            m_adapt_m1 = re.search(
+                r"Number of mate 1 reads with adapter(?: sequence)?:\s+(\d+)",
+                content,
+                re.IGNORECASE,
+            )
+            m_adapt_m2 = re.search(
+                r"Number of mate 2 reads with adapter(?: sequence)?:\s+(\d+)",
+                content,
+                re.IGNORECASE,
+            )
+
+            if m_adapt_pairs and metrics.raw_read_pairs and metrics.raw_read_pairs > 0:
+                metrics.adapter_trimmed_reads_pct = round((int(m_adapt_pairs.group(1)) / metrics.raw_read_pairs) * 100.0, 2)
+            elif m_adapt_reads and metrics.raw_total_reads and metrics.raw_total_reads > 0:
+                metrics.adapter_trimmed_reads_pct = round((int(m_adapt_reads.group(1)) / metrics.raw_total_reads) * 100.0, 2)
+            elif (m_adapt_m1 or m_adapt_m2) and metrics.raw_total_reads and metrics.raw_total_reads > 0:
+                tot_adapt = (int(m_adapt_m1.group(1)) if m_adapt_m1 else 0) + (int(m_adapt_m2.group(1)) if m_adapt_m2 else 0)
+                metrics.adapter_trimmed_reads_pct = round((tot_adapt / metrics.raw_total_reads) * 100.0, 2)
+
+            # Biological fallback: in heavily degraded aDNA libraries where all reads are merged,
+            # the fraction of adapter-trimmed sequences corresponds directly to the collapsed fraction
+            if metrics.adapter_trimmed_reads_pct is None and metrics.merged_fraction_raw is not None:
+                metrics.adapter_trimmed_reads_pct = round(metrics.merged_fraction_raw * 100.0, 2)
+
+            # 9. Mean read lengths (pre and post trimming)
+            m_pre1 = re.search(r"Average length of read 1 before trimming:\s+([\d\.]+)", content, re.IGNORECASE)
+            m_pre2 = re.search(r"Average length of read 2 before trimming:\s+([\d\.]+)", content, re.IGNORECASE)
+            if m_pre1 and m_pre2:
+                metrics.mean_read_length_pre = round((float(m_pre1.group(1)) + float(m_pre2.group(1))) / 2.0, 2)
+            elif m_pre1:
+                metrics.mean_read_length_pre = round(float(m_pre1.group(1)), 2)
+
+            m_post = re.search(r"Average length of retained reads:\s+([\d\.]+)", content, re.IGNORECASE)
+            if m_post:
+                metrics.mean_read_length_post = round(float(m_post.group(1)), 2)
 
         except (ValueError, re.error) as exc:
             warnings_list.append(f"Parsing syntax error in .settings file: {exc}")
@@ -276,7 +380,7 @@ class PreprocessingEngine:
         def _is_fresh_artifact(p: Path) -> bool:
             return p.is_file() and p.stat().st_size > 0 and (p.stat().st_mtime >= run_started_ts - 2.0)
 
-        # Seleziona i file validi e verificati dal timestamp
+        # Select valid files verified by timestamp
         if is_paired and collapse_reads:
             for m in candidate_merged:
                 if _is_fresh_artifact(m):
@@ -299,7 +403,7 @@ class PreprocessingEngine:
                 processed.singleton_fastq = s
                 break
 
-        # Verifica consistenza paired-end
+        # Verify paired-end consistency
         if is_paired:
             if (processed.paired_r1_fastq and not processed.paired_r2_fastq) or (
                 processed.paired_r2_fastq and not processed.paired_r1_fastq
@@ -321,7 +425,7 @@ class PreprocessingEngine:
             processed.output_profile = OutputProfile.EMPTY
             return processed, warnings, errors
 
-        # Verifica di integrità strutturale su tutti gli output
+        # Structural integrity check across all outputs
         for out_file in active_outputs:
             try:
                 FastqValidator.validate_fastq_structure(out_file, max_records_to_inspect=10000)
@@ -330,7 +434,7 @@ class PreprocessingEngine:
             except (FastqValidationError, IntegrityError) as exc:
                 errors.append(f"Corrupted output file {out_file.name}: {exc}")
 
-        # Verifica di sincronizzazione esaustiva sulle coppie PE sopravvissute
+        # Exhaustive synchronization check on surviving PE pairs
         if processed.paired_r1_fastq and processed.paired_r2_fastq:
             try:
                 FastqValidator.validate_paired_end_sync(
@@ -342,7 +446,7 @@ class PreprocessingEngine:
             except FastqValidationError as sync_exc:
                 errors.append(f"Generated paired-end output failed mate synchronization: {sync_exc}")
 
-        # Determinazione del profilo di output
+        # Determine output profile
         has_merged = processed.merged_fastq is not None
         has_paired = processed.paired_r1_fastq is not None and processed.paired_r2_fastq is not None
         has_single = processed.singleton_fastq is not None
@@ -401,7 +505,7 @@ class PreprocessingEngine:
 
         base_prefix = output_dir / sample.sample_id
 
-        # 1. Rilevamento automatico dell'encoding con cross-check su R1 ed R2
+        # 1. Automatic quality encoding detection with R1/R2 cross-check
         if quality_base is None or quality_max is None:
             auto_base_r1, auto_max_r1 = FastqValidator.detect_quality_encoding(r1_path)
             if is_paired and r2_path:
@@ -417,7 +521,7 @@ class PreprocessingEngine:
             active_quality_base = quality_base
             active_quality_max = quality_max
 
-        # 2. Pulizia preventiva dei file residui (prevenzione output stale)
+        # 2. Preventive cleanup of residual files (prevent stale outputs)
         for stale_file in output_dir.glob(f"{sample.sample_id}.*"):
             if stale_file.is_file():
                 try:
@@ -429,7 +533,7 @@ class PreprocessingEngine:
         stdout_log = log_dir / f"{sample.sample_id}.adapterremoval.log"
         stderr_log = log_dir / f"{sample.sample_id}.adapterremoval.err"
 
-        # 3. Costruzione del comando
+        # 3. Command construction
         cmd = [
             binary,
             "--basename", str(base_prefix),
@@ -457,7 +561,7 @@ class PreprocessingEngine:
         if trim_ns:
             cmd.append("--trimns")
 
-        # 4. Audit Trail
+        # 4. Audit trail
         tool_version, raw_version = cls.get_adapterremoval_version()
         sample.tool_meta = ToolMetadata(
             tool_name=PreprocessingTool.ADAPTER_REMOVAL,
@@ -497,7 +601,7 @@ class PreprocessingEngine:
         finally:
             sample.mark_finished()
 
-        # 5. Controllo di uscita e cattura stderr
+        # 5. Exit code verification and stderr capture
         if res.returncode != 0:
             err_content = ""
             if stderr_log.is_file():
@@ -513,14 +617,14 @@ class PreprocessingEngine:
             sample.validation.status = ValidationStatus.FAIL
             raise RuntimeError(f"[{sample.sample_id}] {err_msg}")
 
-        # 6. Parsing metriche
+        # 6. Parse metrics from .settings
         sample.metrics = cls.parse_adapterremoval_settings(
             settings_file=settings_file,
             is_paired=is_paired,
             warnings_list=sample.validation.warnings,
         )
 
-        # 7. Validazione e mappatura output
+        # 7. Validate and map outputs
         processed, out_warnings, out_errors = cls._locate_and_verify_outputs(
             base_prefix=base_prefix,
             is_paired=is_paired,
@@ -538,6 +642,40 @@ class PreprocessingEngine:
             sample.validation.status = ValidationStatus.FAIL
             raise RuntimeError(f"[{sample.sample_id}] Output validation failed: {'; '.join(out_errors)}")
 
+        # 8. Compute post-trimming quality metrics (GC%, Q20, Q30, and post-read length)
+        active_outputs = [
+            f for f in [
+                processed.merged_fastq,
+                processed.paired_r1_fastq,
+                processed.paired_r2_fastq,
+                processed.singleton_fastq,
+            ]
+            if f is not None and f.is_file()
+        ]
+        gc_pct, q20_r, q30_r, sampled_post_len = cls.compute_post_trimming_qc(
+            fastq_paths=active_outputs,
+            quality_base=active_quality_base,
+            sample_reads=25000,
+        )
+        sample.metrics.gc_content_pct = gc_pct
+        sample.metrics.q20_rate_post = q20_r
+        sample.metrics.q30_rate_post = q30_r
+        if sample.metrics.mean_read_length_post is None:
+            sample.metrics.mean_read_length_post = sampled_post_len
+
+        # Fallback for mean_read_length_pre if not parsed from .settings
+        if sample.metrics.mean_read_length_pre is None and r1_path and r1_path.is_file():
+            _, _, _, sampled_pre_len = cls.compute_post_trimming_qc(
+                fastq_paths=[r1_path],
+                quality_base=active_quality_base,
+                sample_reads=2000,
+            )
+            sample.metrics.mean_read_length_pre = sampled_pre_len
+
+        # Final guarantee for adapter_trimmed_reads_pct on merged reads
+        if sample.metrics.adapter_trimmed_reads_pct is None and sample.metrics.merged_fraction_raw is not None:
+            sample.metrics.adapter_trimmed_reads_pct = round(sample.metrics.merged_fraction_raw * 100.0, 2)
+
         sample.processed_reads = processed
         if sample.validation.status != ValidationStatus.FAIL:
             sample.validation.status = ValidationStatus.PASS
@@ -548,6 +686,11 @@ class PreprocessingEngine:
             if sample.metrics.merged_fraction_surviving is not None
             else "N/A"
         )
+        adapt_pct_str = (
+            f"{sample.metrics.adapter_trimmed_reads_pct:.2f}%"
+            if sample.metrics.adapter_trimmed_reads_pct is not None
+            else "N/A"
+        )
 
         logger.info(
             f"[{sample.sample_id}] Preprocessing Completed [Profile: {processed.output_profile.value}] | "
@@ -555,7 +698,9 @@ class PreprocessingEngine:
             f"Alignable Fragments: {sample.metrics.surviving_sequenced_fragments} "
             f"(Merged: {sample.metrics.merged_fragments}, Retained Pairs: {sample.metrics.surviving_read_pairs}, "
             f"Singletons: {sample.metrics.singleton_reads}) | "
-            f"Merged Fraction (Raw): {m_raw_pct} | Merged Fraction (Surviving): {m_surv_pct}"
+            f"Merged Fraction (Raw): {m_raw_pct} | Merged Fraction (Surviving): {m_surv_pct} | "
+            f"Adapter Trimmed: {adapt_pct_str} | GC%: {sample.metrics.gc_content_pct}% | "
+            f"Q20: {sample.metrics.q20_rate_post} | Q30: {sample.metrics.q30_rate_post}"
         )
         return processed
 

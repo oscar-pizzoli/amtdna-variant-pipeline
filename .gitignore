@@ -7,6 +7,7 @@ data/raw_fastq/
 *.fastq.gz
 *.fq
 *.fq.gz
+data/
 
 # Alignments and genomic index files
 *.bam
@@ -36,6 +37,7 @@ outcomestrictsettings/
 build/
 dist/
 scripts/
+operational_files/
 tests/
 # Intermediate / temporary bioinformatics files
 *.tmp

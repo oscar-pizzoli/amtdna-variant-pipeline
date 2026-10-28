@@ -106,6 +106,7 @@ class AlignmentFilterPolicy:
     min_breadth_3x_fraction: float = 0.80        # Warning threshold if breadth >= 3x is below 80% (0.80)
     max_duplication_rate_fraction: float = 0.85  # Warning threshold if duplication rate exceeds 85% (0.85)
     min_mean_depth: float = 3.0                  # Warning threshold if mean depth is below 3.0x
+    min_mapping_rate_pct: float = 0.10           # Warning threshold for raw mapping percentage (0.10% default for shotgun)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes complete filter policy."""
@@ -116,6 +117,7 @@ class AlignmentFilterPolicy:
                 "min_breadth_3x_fraction": self.min_breadth_3x_fraction,
                 "max_duplication_rate_fraction": self.max_duplication_rate_fraction,
                 "min_mean_depth": self.min_mean_depth,
+                "min_mapping_rate_pct": self.min_mapping_rate_pct,
             },
         }
 
@@ -150,7 +152,6 @@ class ReadGroupInfo:
         if not self.library_id or not self.library_id.strip():
             raise ValueError("ReadGroupInfo: 'library_id' cannot be empty.")
 
-        # Check for illegal whitespace characters that would corrupt SAM/BAM header lines
         for field_name, value in [
             ("read_group_id", self.read_group_id),
             ("sample_id", self.sample_id),
@@ -162,7 +163,6 @@ class ReadGroupInfo:
             if value and any(c in value for c in ("\t", "\n", "\r")):
                 raise ValueError(f"ReadGroupInfo: field '{field_name}' contains illegal tab or newline characters.")
 
-        # Platform normalization and validation
         normalized_pl = self.platform.strip().upper()
         if normalized_pl not in self.VALID_PLATFORMS:
             raise ValueError(
@@ -271,18 +271,18 @@ class MAPQProfile:
 class CoverageMetrics:
     """Mitochondrial depth, coverage distribution, and breadth percentages [0.0 - 100.0%]."""
 
-    mean_depth_pre_dedup: Optional[float] = None  # None if baseline BAM was not evaluated
+    mean_depth_pre_dedup: Optional[float] = None
     mean_depth_post_dedup: float = 0.0
     median_depth_post_dedup: float = 0.0
     max_depth_post_dedup: int = 0
     p95_depth_post_dedup: float = 0.0
     p99_depth_post_dedup: float = 0.0
     covered_bases_1x: int = 0
-    breadth_1x_pct: float = 0.0    # % of rCRS bases covered >= 1x (0.0 - 100.0%)
-    breadth_3x_pct: float = 0.0    # % of rCRS bases covered >= 3x (0.0 - 100.0%)
-    breadth_5x_pct: float = 0.0    # % of rCRS bases covered >= 5x
-    breadth_10x_pct: float = 0.0   # % of rCRS bases covered >= 10x
-    breadth_30x_pct: float = 0.0   # % of rCRS bases covered >= 30x
+    breadth_1x_pct: float = 0.0
+    breadth_3x_pct: float = 0.0
+    breadth_5x_pct: float = 0.0
+    breadth_10x_pct: float = 0.0
+    breadth_30x_pct: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes coverage metrics."""
@@ -308,15 +308,15 @@ class DedupMetrics:
 
     examined_reads: int = 0
     examined_pairs: int = 0
-    examined_single_fragments: int = 0    # Merged + Singletons
+    examined_single_fragments: int = 0
     duplicate_reads: int = 0
     duplicate_pairs: int = 0
     duplicate_single_fragments: int = 0
     retained_reads: int = 0
     retained_pairs: int = 0
     retained_single_fragments: int = 0
-    duplication_rate_reads: float = 0.0   # Duplication fraction based on total reads (0.0 - 1.0)
-    duplication_rate_pairs: float = 0.0   # Duplication fraction based on pairs (0.0 - 1.0)
+    duplication_rate_reads: float = 0.0
+    duplication_rate_pairs: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes deduplication metrics."""
@@ -371,23 +371,19 @@ class ProvenanceMetrics:
 class AlignmentOutputs:
     """Container mapping physical BAM, BAI, and metric output files."""
 
-    # Intermediate BAM files
-    merged_raw_bam: Optional[Path] = None     # Merged raw branch BAM prior to filtering
+    merged_raw_bam: Optional[Path] = None
     merged_raw_bai: Optional[Path] = None
-    sorted_bam: Optional[Path] = None         # Prepared BAM (collate -> fixmate -m -> coordinate sort)
+    sorted_bam: Optional[Path] = None
     sorted_bai: Optional[Path] = None
 
-    # Post-filter BAM files
-    filtered_bam: Optional[Path] = None       # Post quality filters (MAPQ >= 30, no unmapped, no secondary/supp)
+    filtered_bam: Optional[Path] = None
     filtered_bai: Optional[Path] = None
 
-    # Post-deduplication BAM files
-    markdup_bam: Optional[Path] = None        # BAM with duplicate flag 0x400 preserved
+    markdup_bam: Optional[Path] = None
     markdup_bai: Optional[Path] = None
-    dedup_bam: Optional[Path] = None          # BAM with duplicates physically removed
+    dedup_bam: Optional[Path] = None
     dedup_bai: Optional[Path] = None
 
-    # Report and diagnostic files
     markdup_metrics_txt: Optional[Path] = None
     flagstat_pre_filter_txt: Optional[Path] = None
     flagstat_post_filter_txt: Optional[Path] = None
@@ -427,23 +423,20 @@ class AlignmentOutputs:
 class AlignmentMetrics:
     """Comprehensive metric summary cleanly separating raw, filtered, and deduplicated counts."""
 
-    # 1. Raw Metrics (Pre-filter)
     total_input_reads: int = 0
     mapped_reads_raw: Optional[int] = None
     unmapped_reads_raw: Optional[int] = None
     secondary_reads_raw: Optional[int] = None
     supplementary_reads_raw: Optional[int] = None
     premarked_duplicates_raw: Optional[int] = None
-    raw_mapping_rate_pct: Optional[float] = None  # Mapping rate percentage [0.0 - 100.0%]
+    raw_mapping_rate_pct: Optional[float] = None
 
-    # 2. Filtering Metrics (Post-filter)
     filtered_unmapped_reads: int = 0
     filtered_secondary_reads: int = 0
     filtered_supplementary_reads: int = 0
     filtered_low_mapq_reads: int = 0
     retained_filtered_reads: int = 0
 
-    # 3. Structured Profiles
     provenance: ProvenanceMetrics = field(default_factory=ProvenanceMetrics)
     mapq_profile: MAPQProfile = field(default_factory=MAPQProfile)
     dedup_metrics: DedupMetrics = field(default_factory=DedupMetrics)

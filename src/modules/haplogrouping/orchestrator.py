@@ -1,12 +1,14 @@
 """
 Block 7 Haplogroup Orchestrator: End-to-end pipeline coordinator executing sequence
 validation, dual-stream HaploGrep3 classification, multi-block audit checks, and contract emission.
+Preserves back-mutation markers (!) across all standardized mutation tokens.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -59,7 +61,7 @@ class HaplogroupOrchestrator:
             tool_version=self.hg_cfg.get("tool_version", "unknown"),
             tree_id=self.hg_cfg.get("tree_id", "phylotree-fu-rcrs"),
             tree_version=str(self.hg_cfg.get("tree_version", "1.2")),
-            metric=self.hg_cfg.get("metric", "kulczynski"),
+            metric=str(self.hg_cfg.get("metric", "KULCZYNSKI")).upper(),
             min_quality_score=float(self.hg_cfg.get("min_quality_score", 0.80)),
             cross_check_vcf=bool(self.hg_cfg.get("cross_check_vcf", True)),
             timeout_seconds=int(self.hg_cfg.get("timeout_seconds", 300)),
@@ -86,12 +88,50 @@ class HaplogroupOrchestrator:
             flag_damage_in_private_mutations=bool(self.audit_cfg.get("flag_damage_in_private_mutations", True)),
         )
 
+    @staticmethod
+    def _standardize_mutation_tokens(
+        mutations: List[str],
+        reference_sequence: Optional[str],
+    ) -> List[str]:
+        """
+        Backfill missing reference bases in HaploGrep SNV tokens (e.g. '73G' -> 'A73G', '152T!' -> 'C152T!').
+        Strictly preserves back-mutation markers (!) and InDel notation (e.g. '315.1C', '523-524d').
+        """
+        if not mutations:
+            return []
+
+        standardized: List[str] = []
+        snv_regex = re.compile(r"^([0-9]+)([ACGT])$", re.IGNORECASE)
+
+        for m in mutations:
+            raw_clean = m.strip()
+            if not raw_clean:
+                continue
+
+            is_back_mutation = raw_clean.endswith("!")
+            clean = raw_clean.rstrip("!")
+
+            match = snv_regex.match(clean)
+            if match and reference_sequence:
+                pos = int(match.group(1))
+                alt = match.group(2).upper()
+                suffix = "!" if is_back_mutation else ""
+                if 1 <= pos <= len(reference_sequence):
+                    ref_base = reference_sequence[pos - 1].upper()
+                    standardized.append(f"{ref_base}{pos}{alt}{suffix}")
+                else:
+                    standardized.append(f"{clean}{suffix}")
+            else:
+                standardized.append(raw_clean)
+        return standardized
+
     def run_sample(
         self,
         sample_id: str,
         consensus_fasta: Path,
         sample_output_dir: Path,
         variants_vcf: Optional[Path] = None,
+        consensus_indel_fasta: Optional[Path] = None,
         reference_info: Optional[ReferenceInfo] = None,
         reference_fasta: Optional[Path] = None,
         expected_fasta_sha256: Optional[str] = None,
@@ -105,7 +145,6 @@ class HaplogroupOrchestrator:
 
         expected_length = reference_info.length_bp if reference_info else 16569
 
-        # Stream reference sequence using SequenceValidator
         ref_seq: Optional[str] = None
         target_ref_path = reference_fasta or (
             Path(self.ref_cfg["fasta_path"]) if self.ref_cfg.get("fasta_path") else None
@@ -162,7 +201,7 @@ class HaplogroupOrchestrator:
         if expected_fasta_sha256 is None and b6_contract:
             expected_fasta_sha256 = b6_contract.get("consensus_fasta_sha256")
 
-        # 2. Pre-flight Sequence Validation
+        # 2. Pre-flight Sequence Validation (Executed on 1:1 Canonical FASTA)
         integrity_metrics, validation_flags, valid_seq = self.validator.load_and_verify_fasta(
             fasta_path=consensus_fasta,
             expected_length=expected_length,
@@ -181,18 +220,22 @@ class HaplogroupOrchestrator:
                 start_time=start_time,
             )
 
-        # Phantom Normalization: pass clean uppercase FASTA to HaploGrep3
-        input_fasta_for_engine = consensus_fasta
-        if integrity_metrics.normalization_applied:
+        # 3. Dual-Stream HaploGrep3 Execution
+        target_fasta_for_haplogrep = (
+            consensus_indel_fasta
+            if (consensus_indel_fasta and consensus_indel_fasta.is_file())
+            else consensus_fasta
+        )
+
+        if integrity_metrics.normalization_applied and target_fasta_for_haplogrep == consensus_fasta:
             normalized_fasta = sample_output_dir / f"{sample_id}.consensus.normalized.fasta"
             with open(normalized_fasta, "w", encoding="utf-8") as nf:
                 nf.write(f">{sample_id}\n{valid_seq}\n")
-            input_fasta_for_engine = normalized_fasta
+            target_fasta_for_haplogrep = normalized_fasta
 
-        # 3. Dual-Stream HaploGrep3 Execution
         try:
             fasta_raw = self.engine.classify_fasta(
-                fasta_path=input_fasta_for_engine,
+                fasta_path=target_fasta_for_haplogrep,
                 sample_id=sample_id,
                 output_dir=sample_output_dir,
             )
@@ -285,6 +328,17 @@ class HaplogroupOrchestrator:
         execution_seconds = round(time.time() - start_time, 2)
         serialized_flags = [f.to_dict() for f in all_flags]
 
+        active_details = (
+            vcf_raw
+            if (audit_result.subclade_shift_supported and vcf_raw)
+            else fasta_raw
+        )
+
+        std_found = self._standardize_mutation_tokens(active_details.found_mutations, ref_seq)
+        std_expected = self._standardize_mutation_tokens(active_details.expected_mutations, ref_seq)
+        std_missing = self._standardize_mutation_tokens(active_details.missing_mutations, ref_seq)
+        std_private = self._standardize_mutation_tokens(active_details.private_mutations, ref_seq)
+
         contract = Block7Contract(
             sample_id=sample_id,
             primary_haplogroup=fasta_raw.haplogroup,
@@ -303,6 +357,10 @@ class HaplogroupOrchestrator:
             subclade_shift_detected=audit_result.subclade_shift_detected,
             subclade_shift_supported=audit_result.subclade_shift_supported,
             fasta_sha256=integrity_metrics.observed_sha256,
+            found_mutations=std_found,
+            expected_mutations=std_expected,
+            missing_mutations=std_missing,
+            private_mutations=std_private,
             flags=serialized_flags,
             execution_time_seconds=execution_seconds,
         )
@@ -408,6 +466,10 @@ class HaplogroupOrchestrator:
             subclade_shift_detected=False,
             subclade_shift_supported=None,
             fasta_sha256=metrics.observed_sha256,
+            found_mutations=[],
+            expected_mutations=[],
+            missing_mutations=[],
+            private_mutations=[],
             flags=serialized_flags,
             execution_time_seconds=execution_seconds,
         )
@@ -491,10 +553,10 @@ class HaplogroupOrchestrator:
             "top_hits": [{"haplogroup": h.haplogroup, "quality": h.quality_score} for h in hg_result.top_hits],
             "vcf_haplogroup": hg_result.vcf_haplogroup,
             "vcf_quality_score": hg_result.vcf_quality_score,
-            "expected_mutations": hg_result.fasta_details.expected_mutations,
-            "found_mutations": hg_result.fasta_details.found_mutations,
-            "missing_mutations": hg_result.fasta_details.missing_mutations,
-            "private_mutations": hg_result.fasta_details.private_mutations,
+            "expected_mutations": contract.expected_mutations,
+            "found_mutations": contract.found_mutations,
+            "missing_mutations": contract.missing_mutations,
+            "private_mutations": contract.private_mutations,
             "mutation_parse_warnings": hg_result.fasta_details.mutation_parse_warnings,
         }
         with open(output_dir / f"{sample_id}.haplogroup.json", "w", encoding="utf-8") as f:

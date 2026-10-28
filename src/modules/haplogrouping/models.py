@@ -92,10 +92,7 @@ class RawHaplogrepResult:
 
 @dataclass(frozen=True)
 class PrivateMutationAssessment:
-    """
-    Evaluates private variant chemistry against authenticity triage.
-    Spatial position within reads is audited in downstream BAM stages.
-    """
+    """Evaluates private variant chemistry against authenticity triage."""
     mutation: str
     position: int
     ref_base: str
@@ -194,6 +191,14 @@ class CrossBlockAuditResult:
             if p.classification == PrivateMutationDamageClass.TRANSVERSION_NON_DAMAGE
         ]
 
+    @property
+    def spatial_verified_mutations(self) -> List[str]:
+        return [
+            p.mutation
+            for p in self.private_mutations_assessment
+            if p.classification == PrivateMutationDamageClass.TRANSITION_SPATIAL_VERIFIED
+        ]
+
 
 @dataclass(frozen=True)
 class HaplogroupResult:
@@ -210,8 +215,9 @@ class HaplogroupResult:
     vcf_details: Optional[RawHaplogrepResult] = None
 
 
-# Compatibility alias to avoid contract drift
+# Compatibility alias to prevent contract drift
 HaplogrepResult = HaplogroupResult
+
 
 @dataclass(frozen=True)
 class ValidationResult:
@@ -222,7 +228,6 @@ class ValidationResult:
     haplogroup_acceptable: bool
     cross_block_audit: CrossBlockAuditResult
     flags: List[AuditFlag] = field(default_factory=list)
-
 
 @dataclass(frozen=True)
 class Block7Contract:
@@ -244,8 +249,13 @@ class Block7Contract:
     subclade_shift_detected: bool
     subclade_shift_supported: Optional[bool]
     fasta_sha256: str
-    flags: List[Dict[str, Any]]
-    execution_time_seconds: float
+    # Flussi mutazionali standardizzati per il Blocco 8
+    found_mutations: List[str] = field(default_factory=list)
+    expected_mutations: List[str] = field(default_factory=list)
+    missing_mutations: List[str] = field(default_factory=list)
+    private_mutations: List[str] = field(default_factory=list)
+    flags: List[Dict[str, Any]] = field(default_factory=list)
+    execution_time_seconds: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         """Generic serialization avoiding manual enum drift."""

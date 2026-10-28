@@ -22,9 +22,7 @@ class HaplogroupStatus(str, Enum):
 
 
 class ContaminantAffinity(str, Enum):
-    """
-    Topological relationship between endogenous and estimated contaminant haplogroups.
-    """
+    """Topological relationship between endogenous and estimated contaminant haplogroups."""
     EXACT_MATCH = "EXACT_MATCH"
     SUBCLADE = "SUBCLADE"
     ANCESTRAL = "ANCESTRAL"
@@ -53,6 +51,7 @@ class PrivateMutationDamageClass(str, Enum):
     """
     TRANSVERSION_NON_DAMAGE = "TRANSVERSION_NON_DAMAGE"
     TRANSITION_NON_DAMAGE = "TRANSITION_NON_DAMAGE"
+    TRANSITION_SPATIAL_VERIFIED = "TRANSITION_SPATIAL_VERIFIED"
     TRANSITION_REQUIRES_SPATIAL_AUDIT = "TRANSITION_REQUIRES_SPATIAL_AUDIT"
     TRANSITION_UNSUPPORTED_DAMAGE = "TRANSITION_UNSUPPORTED_DAMAGE"
     INDEL_SOFT_CLIP_SUSPECT = "INDEL_SOFT_CLIP_SUSPECT"

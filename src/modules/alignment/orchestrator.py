@@ -109,10 +109,22 @@ class AlignmentOrchestrator:
             )
             logger.warning(f"[{result.sample_id}] {msg}")
             result.add_warning(msg, AlignmentWarningCode.HIGH_DUPLICATION_RATE)
-        if metrics.raw_mapping_rate_pct is not None and metrics.raw_mapping_rate_pct < 10.0:
-            msg = f"Extremely low raw mapping rate: {metrics.raw_mapping_rate_pct:.2f}% (configured threshold: 10.00%)."
-            logger.warning(f"[{result.sample_id}] {msg}")
-            result.add_warning(msg, AlignmentWarningCode.LOW_MAPPING_RATE)
+
+        # 4. Context-aware raw mapping rate check
+        min_map_rate = getattr(policy, "min_mapping_rate_pct", 0.10)
+        if metrics.raw_mapping_rate_pct is not None and metrics.raw_mapping_rate_pct < min_map_rate:
+            if cov.mean_depth_post_dedup >= policy.min_mean_depth:
+                logger.info(
+                    f"[{result.sample_id}] Nominal shotgun mapping rate: {metrics.raw_mapping_rate_pct:.2f}% "
+                    f"(sufficient endogenous depth confirmed: {cov.mean_depth_post_dedup:.1f}x)."
+                )
+            else:
+                msg = (
+                    f"Extremely low raw mapping rate: {metrics.raw_mapping_rate_pct:.2f}% "
+                    f"(configured threshold: {min_map_rate:.2f}%) with insufficient coverage ({cov.mean_depth_post_dedup:.1f}x)."
+                )
+                logger.warning(f"[{result.sample_id}] {msg}")
+                result.add_warning(msg, AlignmentWarningCode.LOW_MAPPING_RATE)
 
         # 5. Check if zero reads survived filtering
         if metrics.retained_filtered_reads == 0:
@@ -222,17 +234,13 @@ class AlignmentOrchestrator:
         logger.info(f"[{sample_id}] ========================================================")
 
         try:
-            # ------------------------------------------------------------------
             # Step 1: Reference Genome Precondition Check
-            # ------------------------------------------------------------------
             if not reference_info.has_bwa_index or not reference_info.has_fai_index:
                 raise AlignmentOrchestratorError(
                     f"Reference genome indices are missing for {reference_info.fasta_path.name}."
                 )
 
-            # ------------------------------------------------------------------
             # Step 2: Multi-Branch BWA Alignment
-            # ------------------------------------------------------------------
             logger.info(f"[{sample_id}] [Stage 1/5] Running multi-branch BWA alignment...")
             branch_results: AlignmentBranchResults = BWAAligner.align_sample_branches(
                 sample=sample,
@@ -256,9 +264,7 @@ class AlignmentOrchestrator:
             for cmd in branch_results.tool_meta.commands_executed:
                 tool_meta.add_command(cmd)
 
-            # ------------------------------------------------------------------
-            # Step 3: Structural BAM Preparation (Merge -> Collate -> Fixmate -> Sort)
-            # ------------------------------------------------------------------
+            # Step 3: Structural BAM Preparation
             logger.info(f"[{sample_id}] [Stage 2/5] Merging branches and streaming collate -> fixmate -m -> sort...")
             prep_result: PipelinePreparationResult = SamtoolsPipeline.process_sample_branches(
                 branch_results=branch_results,
@@ -276,9 +282,7 @@ class AlignmentOrchestrator:
             for cmd in prep_result.command_lines:
                 tool_meta.add_command(cmd)
 
-            # ------------------------------------------------------------------
-            # Step 4: PCR Deduplication (samtools markdup -s -> Dual-BAM)
-            # ------------------------------------------------------------------
+            # Step 4: PCR Deduplication
             logger.info(f"[{sample_id}] [Stage 3/5] Executing PCR duplicate marking and deduplication...")
             dedup_result: DedupExecutionResult = DedupEngine.execute_dedup(
                 sample_id=sample_id,
@@ -297,9 +301,7 @@ class AlignmentOrchestrator:
             for cmd in dedup_result.command_lines:
                 tool_meta.add_command(cmd)
 
-            # ------------------------------------------------------------------
             # Step 5: Quality & Multi-Mapping Filtering
-            # ------------------------------------------------------------------
             logger.info(f"[{sample_id}] [Stage 4/5] Applying quality, flag, and multi-mapping filters...")
             filter_result: FilterExecutionResult = AlignmentFilterEngine.execute_filtering(
                 sample_id=sample_id,
@@ -320,9 +322,7 @@ class AlignmentOrchestrator:
             for cmd in filter_result.command_lines:
                 tool_meta.add_command(cmd)
 
-            # ------------------------------------------------------------------
             # Step 6: Quality Metrics Collection & Whole-Genome Depth Profiling
-            # ------------------------------------------------------------------
             logger.info(f"[{sample_id}] [Stage 5/5] Collecting flagstats, depth distribution, and coverage metrics...")
             metrics_result: MetricsCollectionResult = MetricsCollector.collect_all_metrics(
                 sample_id=sample_id,
@@ -345,9 +345,7 @@ class AlignmentOrchestrator:
             for cmd in metrics_result.command_lines:
                 tool_meta.add_command(cmd)
 
-            # ------------------------------------------------------------------
             # Step 7: Map Physical Outputs & Consolidated Metrics
-            # ------------------------------------------------------------------
             result.metrics = metrics_result.alignment_metrics
             result.outputs = AlignmentOutputs(
                 merged_raw_bam=prep_result.merged_raw_bam,
@@ -367,9 +365,7 @@ class AlignmentOrchestrator:
                 depth_tsv=metrics_result.depth_tsv,
             )
 
-            # ------------------------------------------------------------------
             # Step 8: QC Threshold Evaluation & Final Status Determination
-            # ------------------------------------------------------------------
             cls.evaluate_qc_thresholds(
                 metrics=result.metrics,
                 policy=active_policy,

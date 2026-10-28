@@ -1,0 +1,79 @@
+themes:
+  # ----------------------------------------------------------------------------
+  # Primary Custom Theme: Neon Sunset (Pink & Yellow Focus)
+  # ----------------------------------------------------------------------------
+  "Neon Sunset (Pink & Yellow)":
+    bg_style: "radial-gradient(circle,rgba(238, 174, 202, 1) 0%, rgba(235, 117, 201, 0.95) 58%)"
+    sidebar_bg: "#ad1070"
+    card_bg: "rgba(42, 22, 53, 0.75)"
+    text_color: "#fff705"
+    muted_text: "#F472B6"
+    code_bg: "#0D0713"
+    code_text: "#FFFFFF"
+    accent: "#FBBF24"
+
+  # ----------------------------------------------------------------------------
+  # Dark Biological & Forensic Gradients
+  # ----------------------------------------------------------------------------
+  "Midnight Petrol (Bio-Abyss Gradient)":
+    bg_style: "linear-gradient(135deg, #09121D 0%, #0D1B2A 50%, #162638 100%)"
+    sidebar_bg: "#08121E"
+    card_bg: "rgba(19, 39, 61, 0.75)"
+    text_color: "#E0F2FE"
+    muted_text: "#7DD3FC"
+    code_bg: "#04090F"
+    code_text: "#FFFFFF"
+    accent: "#06B6D4"
+
+  "Kyoto Twilight (Plum Gradient)":
+    bg_style: "linear-gradient(135deg, #120D1B 0%, #1B1528 50%, #291F3D 100%)"
+    sidebar_bg: "#140E20"
+    card_bg: "rgba(37, 29, 56, 0.75)"
+    text_color: "#F3E8FF"
+    muted_text: "#D8B4FE"
+    code_bg: "#0D0817"
+    code_text: "#FFFFFF"
+    accent: "#A855F7"
+
+  "Deep Forest & Brass (Botanical Gradient)":
+    bg_style: "linear-gradient(135deg, #0C1410 0%, #15201B 50%, #1E3029 100%)"
+    sidebar_bg: "#0E1713"
+    card_bg: "rgba(30, 46, 39, 0.75)"
+    text_color: "#E2EBE6"
+    muted_text: "#86EFAC"
+    code_bg: "#070B09"
+    code_text: "#FFFFFF"
+    accent: "#D97706"
+
+  "Royal Navy & Champagne (Executive Luxury)":
+    bg_style: "linear-gradient(135deg, #090E1A 0%, #10172A 50%, #1C2744 100%)"
+    sidebar_bg: "#0B0F1D"
+    card_bg: "rgba(23, 35, 64, 0.75)"
+    text_color: "#F8FAFC"
+    muted_text: "#94A3B8"
+    code_bg: "#050811"
+    code_text: "#FFFFFF"
+    accent: "#F59E0B"
+
+  "Cyber Aurora (Radial Glow)":
+    bg_style: "radial-gradient(circle at 85% 15%, rgba(16, 185, 129, 0.12), transparent 45%), linear-gradient(135deg, #050B14 0%, #0A1322 100%)"
+    sidebar_bg: "#060E1A"
+    card_bg: "rgba(12, 25, 44, 0.75)"
+    text_color: "#ECFDF5"
+    muted_text: "#6EE7B7"
+    code_bg: "#02090F"
+    code_text: "#FFFFFF"
+    accent: "#10B981"
+
+  # ----------------------------------------------------------------------------
+  # Editorial & High-Contrast Light Theme
+  # ----------------------------------------------------------------------------
+  "Warm Terracotta (Vintage Academic)":
+    bg_style: "linear-gradient(135deg, #E6DAC4 0%, #EDE4D3 50%, #F5EFE6 100%)"
+    sidebar_bg: "#DECBB4"
+    card_bg: "rgba(229, 217, 196, 0.85)"
+    text_color: "#2C1810"
+    muted_text: "#78350F"
+    code_bg: "#1C100B"
+    code_text: "#FFFFFF"
+    accent: "#C2410C"

@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import pysam
 import yaml
 
-# Risoluzione dinamica della radice del progetto
+# Dynamic resolution of project root
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -289,18 +289,17 @@ class ContaminationBatchRunner:
         policy: FastScreeningPolicy,
         output_dir: Path,
     ) -> Tuple[str, Optional[FastScreenResult], Optional[Path], float, Optional[str]]:
-        """Worker task executing Phase 1 Fast Screening."""
+        """Worker task executing Phase 1 Fast Screening without directory nesting."""
         t0 = time.perf_counter()
-        sample_out = output_dir / sample_id
-        sample_out.mkdir(parents=True, exist_ok=True)
         try:
+            # FastContaminationScreen appends sample_id internally to output_dir
             fs_res, dissent_tsv = FastContaminationScreen.run_screen(
                 sample_id=sample_id,
                 input_bam=bam_path,
                 reference_fasta=reference_fasta,
                 expected_contig=reference_contig,
                 policy=policy,
-                output_dir=sample_out,
+                output_dir=output_dir,
             )
             return sample_id, fs_res, dissent_tsv, time.perf_counter() - t0, None
         except Exception as exc:
@@ -353,6 +352,7 @@ class ContaminationBatchRunner:
         precomputed_fs: Optional[FastScreenResult],
         precomputed_tsv: Optional[Path],
         is_ancient: bool = True,
+        log_dir: Optional[Path] = None,
     ) -> ContaminationResult:
         """Worker task executing Phase 2 Bayesian modeling (or direct DissentEngine for modern mtDNA)."""
         t_task_start = time.perf_counter()
@@ -364,6 +364,12 @@ class ContaminationBatchRunner:
         sample_out_dir = output_dir / sample_id
         sample_out_dir.mkdir(parents=True, exist_ok=True)
         final_json_path = sample_out_dir / f"{sample_id}.contamination.json"
+
+        # Dedicated centralized log directory
+        method_subdir = "schmutzi" if is_ancient else "dissent"
+        base_log_dir = log_dir or (output_dir.parent / "logs" / "contamination")
+        sample_log_dir = base_log_dir / sample_id / method_subdir
+        sample_log_dir.mkdir(parents=True, exist_ok=True)
 
         result = ContaminationResult(sample_id=sample_id, policy=orchestrator.policy)
         result.mark_started()
@@ -392,7 +398,7 @@ class ContaminationBatchRunner:
             orchestrator._save_contamination_json(result, final_json_path)
             return result
 
-        # Iniezione obbligatoria di samtools calmd e subsampling atomico con SchmutziInputPreparer
+        # Mandatory samtools calmd MD tag injection and atomic subsampling via SchmutziInputPreparer
         ref_info = ReferenceInfo(
             fasta_path=context.reference_fasta_path,
             contig_name=context.reference_contig,
@@ -441,7 +447,7 @@ class ContaminationBatchRunner:
 
         t_engine0 = time.perf_counter()
 
-        # BIFORCAZIONE ARCHITETTURALE: Routing Diretto a DissentEngine per Campioni Moderni/Zero-Damage
+        # ARCHITECTURAL BRANCHING: Direct routing to DissentEngine for modern/zero-damage mtDNA samples
         if not is_ancient:
             logger.info(
                 f"[{sample_id}] Direct routing to DissentEngine (Block 4: modern/zero-damage mtDNA certified)."
@@ -452,7 +458,7 @@ class ContaminationBatchRunner:
                     input_bam=effective_bam,
                     reference_fasta=context.reference_fasta_path,
                     reference_contig=context.reference_contig,
-                    output_dir=sample_out_dir,
+                    output_dir=output_dir,
                     orchestrator=orchestrator,
                 )
                 audit.step_runtimes_seconds["dissent"] = round(time.perf_counter() - t_engine0, 2)
@@ -471,7 +477,7 @@ class ContaminationBatchRunner:
                 orchestrator._save_contamination_json(result, final_json_path)
                 return result
         else:
-            # Esecuzione Bayesiana Completa Schmutzi per campioni archeologici autentici
+            # Full Bayesian Schmutzi execution for authentic archaeological samples
             try:
                 schmutzi_out = SchmutziEngine.run(
                     sample_id=sample_id,
@@ -482,6 +488,7 @@ class ContaminationBatchRunner:
                     threads=threads_per_sample,
                     max_iterations=orchestrator.policy.schmutzi.max_iterations,
                     use_wrapped=orchestrator.policy.schmutzi.use_wrapped_reference,
+                    log_dir=sample_log_dir,
                 )
                 audit.step_runtimes_seconds["schmutzi"] = round(time.perf_counter() - t_engine0, 2)
                 outputs.cont_est_file = schmutzi_out.cont_est_file
@@ -506,7 +513,7 @@ class ContaminationBatchRunner:
                             input_bam=effective_bam,
                             reference_fasta=context.reference_fasta_path,
                             reference_contig=context.reference_contig,
-                            output_dir=sample_out_dir,
+                            output_dir=output_dir,
                             orchestrator=orchestrator,
                         )
                         audit.step_runtimes_seconds["dissent"] = round(time.perf_counter() - t_engine0, 2)
@@ -560,15 +567,19 @@ class ContaminationBatchRunner:
         output_dir: Path,
         config: Dict[str, Any],
         resource_alloc: ResourceAllocation,
+        log_dir: Optional[Path] = None,
     ) -> List[ContaminationResult]:
         """Orchestrates two-phase cohort execution maximizing concurrency and work conservation."""
         output_dir.mkdir(parents=True, exist_ok=True)
+        base_log_dir = log_dir or (output_dir.parent / "logs" / "contamination")
+        base_log_dir.mkdir(parents=True, exist_ok=True)
+
         final_results: List[ContaminationResult] = []
 
         sample_map: Dict[str, Path] = {}
         ancient_map: Dict[str, bool] = {}
 
-        # Mappatura e rilevamento automatico dello stato antico/moderno da Blocco 4
+        # Mapping and robust automatic detection of ancient/modern status from Block 4 contracts
         for item in discovered_samples:
             s_id = str(item[0])
             b_path = Path(item[1])
@@ -577,17 +588,33 @@ class ContaminationBatchRunner:
             if len(item) >= 3:
                 ancient_map[s_id] = bool(item[2])
             else:
-                damage_json = PROJECT_ROOT / "results" / "damage" / s_id / f"{s_id}.damage.json"
-                if damage_json.is_file():
+                contract_candidates = [
+                    PROJECT_ROOT / "operational_files" / "damage" / s_id / f"{s_id}.block4_contract.json",
+                    PROJECT_ROOT / "operational_files" / "damage" / s_id / f"{s_id}.damage.json",
+                    PROJECT_ROOT / "results" / "damage" / s_id / f"{s_id}.block4_contract.json",
+                    PROJECT_ROOT / "results" / "damage" / s_id / f"{s_id}.damage.json",
+                ]
+
+                resolved_contract = next((p for p in contract_candidates if p.is_file()), None)
+
+                if resolved_contract:
                     try:
-                        with open(damage_json, "r", encoding="utf-8") as f_d:
+                        with open(resolved_contract, "r", encoding="utf-8") as f_d:
                             dam_data = json.load(f_d)
-                            v = (
-                                dam_data.get("profile", {}).get("authentication_verdict")
+                            auth_status = str(
+                                dam_data.get("authentication_status")
+                                or dam_data.get("biological_type")
+                                or dam_data.get("profile", {}).get("authentication_verdict")
+                                or dam_data.get("profile", {}).get("authentication_status")
                                 or dam_data.get("verdict")
                                 or ""
+                            ).upper()
+
+                            is_ancient_sample = (
+                                "AUTHENTIC_ANCIENT" in auth_status
+                                or auth_status == "ANCIENT"
                             )
-                            ancient_map[s_id] = "AUTHENTIC_ANCIENT_SUPPORTED" in str(v)
+                            ancient_map[s_id] = is_ancient_sample
                     except Exception:
                         ancient_map[s_id] = True
                 else:
@@ -705,6 +732,7 @@ class ContaminationBatchRunner:
                         reference_fasta_path=reference_fasta,
                         reference_contig=reference_contig,
                         reference_length_bp=reference_length_bp,
+                        is_ancient=is_anc,
                     )
                     fut = p2_pool.submit(
                         cls._run_phase2_schmutzi_task,
@@ -715,6 +743,7 @@ class ContaminationBatchRunner:
                         precomputed_fs=fs_res,
                         precomputed_tsv=tsv_p,
                         is_ancient=is_anc,
+                        log_dir=base_log_dir,
                     )
                     future_to_sample[fut] = s_id
 
@@ -870,12 +899,12 @@ def main() -> None:
     default_length = ref_cfg.get("expected_length", 16569)
 
     default_input_dir = ContaminationBatchRunner.resolve_path(
-        "results/alignment",
-        PROJECT_ROOT / "results" / "alignment",
+        "operational_files/alignment",
+        PROJECT_ROOT / "operational_files" / "alignment",
     )
     default_out_dir = ContaminationBatchRunner.resolve_path(
-        out_cfg.get("results_dir", "results") + "/contamination",
-        PROJECT_ROOT / "results" / "contamination",
+        out_cfg.get("operational_files_dir", "operational_files") + "/contamination",
+        PROJECT_ROOT / "operational_files" / "contamination",
     )
 
     parser = argparse.ArgumentParser(

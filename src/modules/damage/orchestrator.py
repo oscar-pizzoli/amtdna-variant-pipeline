@@ -112,7 +112,7 @@ class DamageOrchestrator:
         if not bam_path.is_file() or bam_path.stat().st_size == 0:
             raise DamageBAMValidationError(f"Input BAM does not exist or is empty: {bam_path}")
 
-        # 1. samtools quickcheck validation
+        # 1. Validate BAM physical integrity via samtools quickcheck
         if shutil.which("samtools") is not None:
             try:
                 res = subprocess.run(["samtools", "quickcheck", str(bam_path)], capture_output=True, text=True, check=False)
@@ -121,7 +121,7 @@ class DamageOrchestrator:
             except OSError as exc:
                 logger.warning(f"Could not execute samtools quickcheck: {exc}")
 
-        # 2. Check or generate BAI index
+        # 2. Check or generate missing BAI index
         bai_path = Path(f"{bam_path}.bai")
         if not bai_path.is_file() or bai_path.stat().st_size == 0:
             logger.info(f"Generating missing index for input BAM: {bam_path.name}...")
@@ -130,7 +130,7 @@ class DamageOrchestrator:
             except Exception as exc:
                 raise DamageBAMValidationError(f"Failed indexing input BAM '{bam_path.name}': {exc}") from exc
 
-        # 3. Inspect header and mapped reads
+        # 3. Inspect header references and mapped records
         try:
             with pysam.AlignmentFile(str(bam_path), "rb") as bam:
                 if expected_contig not in bam.references:
@@ -211,6 +211,113 @@ class DamageOrchestrator:
             raise DamageOrchestrationError("Policy requested RAW_SORTED, but no valid sorted BAM was provided.")
 
         raise DamageOrchestrationError(f"Unsupported or unrecognized input BAM type: {target_type}")
+
+    @classmethod
+    def _organize_damage_outputs(
+        cls,
+        sample_id: str,
+        damage_dir: Path,
+        result: DamageResult,
+    ) -> None:
+        """Restructures raw mapDamage intermediate files into dedicated subdirectories.
+
+        Preserves primary root deliverables (BAM, BAI, JSON contracts) while moving
+        diagnostic plots, analytical matrices, and execution logs into structured folders.
+        """
+        plots_dir = damage_dir / "plots"
+        tables_dir = damage_dir / "tables"
+        logs_dir = damage_dir / "logs"
+
+        for d in (plots_dir, tables_dir, logs_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+        moves: List[Tuple[str, Path, Optional[str]]] = [
+            # Diagnostic and MCMC evaluation plots
+            ("Fragmisincorporation_plot.pdf", plots_dir / f"{sample_id}.damage_profile.pdf", "damage_plot_pdf"),
+            ("Length_plot.pdf", plots_dir / f"{sample_id}.length_distribution.pdf", None),
+            ("Stats_out_MCMC_hist.pdf", plots_dir / f"{sample_id}.mcmc_histograms.pdf", None),
+            ("Stats_out_MCMC_post_pred.pdf", plots_dir / f"{sample_id}.mcmc_posterior_predictive.pdf", None),
+            ("Stats_out_MCMC_trace.pdf", plots_dir / f"{sample_id}.mcmc_trace.pdf", None),
+            # Empirical matrices, distributions, and MCMC parameter tables
+            ("misincorporation.txt", tables_dir / f"{sample_id}.misincorporation_matrix.tsv", "misincorporation_txt"),
+            ("lgdistribution.txt", tables_dir / f"{sample_id}.fragment_length_distribution.tsv", "length_distribution_txt"),
+            ("5pCtoT_freq.txt", tables_dir / f"{sample_id}.5p_c_to_t_frequencies.tsv", None),
+            ("3pGtoA_freq.txt", tables_dir / f"{sample_id}.3p_g_to_a_frequencies.tsv", None),
+            ("dnacomp.txt", tables_dir / f"{sample_id}.read_genomic_composition.tsv", None),
+            ("dnacomp_genome.csv", tables_dir / f"{sample_id}.reference_genome_composition.csv", None),
+            ("Stats_out_MCMC_correct_prob.csv", tables_dir / f"{sample_id}.mcmc_correction_probabilities.csv", None),
+            ("Stats_out_MCMC_iter.csv", tables_dir / f"{sample_id}.mcmc_iterations.csv", None),
+            ("Stats_out_MCMC_iter_summ_stat.csv", tables_dir / f"{sample_id}.mcmc_parameter_summary.csv", None),
+            # Execution and tool runtime logs
+            ("Runtime_log.txt", logs_dir / f"{sample_id}.mapdamage_runtime.log", None),
+        ]
+
+        for src_name, dst_path, attr in moves:
+            src_path = damage_dir / src_name
+            if src_path.is_file():
+                try:
+                    shutil.move(str(src_path), str(dst_path))
+                    if attr and hasattr(result.outputs, attr):
+                        setattr(result.outputs, attr, dst_path)
+                except Exception as exc:
+                    logger.warning(f"[{sample_id}] Could not relocate {src_name}: {exc}")
+
+        # 1. Generate explanatory guide for diagnostic plots
+        plots_readme_path = plots_dir / "README.txt"
+        plots_readme_content = (
+            f"=== mapDamage2 Diagnostic Plots Description for Sample: {sample_id} ===\n\n"
+            f"1. {sample_id}.damage_profile.pdf (formerly Fragmisincorporation_plot.pdf):\n"
+            "   Empirical terminal deamination profiles (C->T on 5' end in red, G->A on 3' end in blue)\n"
+            "   plotted as a function of distance from read termini (positions 1 to window limit).\n"
+            "   Also depicts background substitution noise across all 12 nucleotide classes.\n\n"
+            f"2. {sample_id}.length_distribution.pdf (formerly Length_plot.pdf):\n"
+            "   Aligned fragment size distribution (in base pairs). Authentic ancient DNA shows\n"
+            "   a heavily skewed distribution towards short fragments (<100 bp).\n\n"
+            f"3. {sample_id}.mcmc_histograms.pdf (formerly Stats_out_MCMC_hist.pdf):\n"
+            "   Posterior probability density distributions for the Bayesian damage model parameters:\n"
+            "   theta (baseline error), delta_s (single-stranded deamination), delta_d (double-stranded),\n"
+            "   and lambda (overhang length).\n\n"
+            f"4. {sample_id}.mcmc_posterior_predictive.pdf (formerly Stats_out_MCMC_post_pred.pdf):\n"
+            "   Model fit overlay comparing observed damage frequencies (points) against the posterior\n"
+            "   predictive credible intervals estimated by MCMC simulations.\n\n"
+            f"5. {sample_id}.mcmc_trace.pdf (formerly Stats_out_MCMC_trace.pdf):\n"
+            "   Markov Chain Monte Carlo sampling trace plots across iterations.\n"
+            "   Evaluates chain convergence, mixing behavior, and parameter stationarity.\n"
+        )
+        try:
+            with open(plots_readme_path, "w", encoding="utf-8") as f:
+                f.write(plots_readme_content)
+        except Exception as exc:
+            logger.warning(f"[{sample_id}] Could not write plots documentation README: {exc}")
+
+        # 2. Generate explanatory guide for statistical deliverables
+        tables_readme_path = tables_dir / "README.txt"
+        tables_readme_content = (
+            f"=== mapDamage2 Statistical Tables Description for Sample: {sample_id} ===\n\n"
+            f"1. {sample_id}.misincorporation_matrix.tsv (formerly misincorporation.txt):\n"
+            "   Full substitution matrix across read sequencing cycles and terminal positions.\n"
+            "   Tracks counts for all 12 substitution classes relative to reference base.\n\n"
+            f"2. {sample_id}.5p_c_to_t_frequencies.tsv & {sample_id}.3p_g_to_a_frequencies.tsv:\n"
+            "   Terminal hydrolytic deamination mismatch rates by distance from fragment ends:\n"
+            "   - 5' C->T: Cytosine deamination frequency profile (positions 1 to window limit).\n"
+            "   - 3' G->A: Complementary purine transition profile on opposite strand.\n\n"
+            f"3. {sample_id}.fragment_length_distribution.tsv (formerly lgdistribution.txt):\n"
+            "   Empirical count distribution of aligned insert lengths (in base pairs).\n"
+            "   Used to derive median insert length and ancient fragmentation parameters.\n\n"
+            f"4. {sample_id}.read_genomic_composition.tsv (formerly dnacomp.txt):\n"
+            "   Local reference nucleotide composition (A/C/G/T) in regions aligned by reads.\n\n"
+            f"5. {sample_id}.reference_genome_composition.csv (formerly dnacomp_genome.csv):\n"
+            "   Global baseline base frequencies across the mitochondrial reference contig.\n\n"
+            f"6. {sample_id}.mcmc_parameter_summary.csv & {sample_id}.mcmc_iterations.csv:\n"
+            "   Bayesian MCMC estimation of damage parameters (theta, lambda, delta_s, delta_d).\n\n"
+            f"7. {sample_id}.mcmc_correction_probabilities.csv:\n"
+            "   Posterior probabilities used for base quality score rescaling in the output BAM.\n"
+        )
+        try:
+            with open(tables_readme_path, "w", encoding="utf-8") as f:
+                f.write(tables_readme_content)
+        except Exception as exc:
+            logger.warning(f"[{sample_id}] Could not write tables documentation README: {exc}")
 
     @classmethod
     def run_sample_damage_pipeline(
@@ -391,7 +498,7 @@ class DamageOrchestrator:
             )
             audit.step_runtimes_seconds["qc_evaluation"] = time.perf_counter() - t_start
 
-            # Harmonize top-level container status and metadata
+            # Harmonize container status and diagnostic warnings
             result.status = qc_result.status
             result.profile = qc_result.profile
             result.outputs = qc_result.outputs
@@ -399,6 +506,13 @@ class DamageOrchestrator:
             result.warnings.extend(qc_result.warnings)
             result.error_codes.extend(qc_result.error_codes)
             result.errors.extend(qc_result.errors)
+
+            # 7. Post-Execution Reorganization: Move raw mapDamage files to dedicated subdirectories
+            cls._organize_damage_outputs(
+                sample_id=sample_id,
+                damage_dir=out_damage_dir,
+                result=result,
+            )
 
         except DamageBAMValidationError as b_err:
             result.add_error(DamageErrorCode.INPUT_BAM_NOT_FOUND, str(b_err))
@@ -415,7 +529,7 @@ class DamageOrchestrator:
         finally:
             result.mark_finished()
 
-        # Safe summary logging across success and early-abortion states
+        # Summary execution report
         logger.info("=" * 65)
         logger.info(f"[{sample_id}] Block 4 Completed with Status: {result.status.value}")
         

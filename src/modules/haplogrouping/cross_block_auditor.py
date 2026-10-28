@@ -1,6 +1,7 @@
 """
 Block 7 Cross-Block Auditor: Multi-block consistency integration, topological
 phylotree graph traversal, reference-aware mutation parsing, and spatial damage triage.
+Extended with dynamic genomic boundaries and terminal insertion soft-clip detection.
 """
 
 import logging
@@ -27,20 +28,17 @@ logger = logging.getLogger("mtDNA_Pipeline.CrossBlockAuditor")
 
 @dataclass(frozen=True)
 class ParsedMutation:
-    """Structured decomposition of a mitochondrial variant."""
+    """Structured decomposition of a mitochondrial variant retaining back-mutation state."""
     raw: str
     variant_type: str  # "SNV", "INS", "DEL", "UNKNOWN"
     position: int
     ref_base: str
     alt_base: str
+    is_back_mutation: bool = False
 
 
 class PhylotreeGraph:
-    """
-    Topological and phylogenetic clade resolution engine.
-    Traverses true ancestral paths and resolves macro-haplogroup aliases
-    without string-prefix fallacies.
-    """
+    """Topological and phylogenetic clade resolution engine."""
 
     KNOWN_MACRO_PARENTS: Dict[str, str] = {
         "H": "HV",
@@ -163,6 +161,12 @@ class CrossBlockAuditor:
         "HIGH_CONTAMINATION_CAUTION",
         "CONTAMINATED_REJECT",
         "FAST_CLEAR",
+        "RESTRICT_HETEROPLASMY",
+        "PMD_FILTERING_REQUIRED",
+        "USE_ENDOGENOUS_SCHMUTZI_CONSENSUS",
+        "INSUFFICIENT_DATA",
+        "REJECT_CONTAMINATED",
+        "EXCLUDE_OR_MANUAL_REVIEW",
     }
 
     INS_REGEX = re.compile(r"^([0-9]+)\.([0-9]+)([ACGTN]+)$", re.IGNORECASE)
@@ -187,6 +191,19 @@ class CrossBlockAuditor:
         self.evaluate_contaminant_closeness = evaluate_contaminant_closeness
         self.flag_damage_in_private_mutations = flag_damage_in_private_mutations
 
+    @staticmethod
+    def _get_site_heteroplasmy_detail(
+        b6_data: Dict[str, Any],
+        position: int,
+    ) -> Optional[Dict[str, Any]]:
+        details = b6_data.get("heteroplasmy_details")
+        if not isinstance(details, dict):
+            return None
+        res = details.get(str(position))
+        if res is None:
+            res = details.get(position)
+        return res if isinstance(res, dict) else None
+
     def audit(
         self,
         sample_id: str,
@@ -199,7 +216,6 @@ class CrossBlockAuditor:
     ) -> CrossBlockAuditResult:
         flags: List[AuditFlag] = []
 
-        # 0. Strict Upstream Contract Verification
         if not block4_contract:
             flags.append(
                 AuditFlag(
@@ -223,7 +239,6 @@ class CrossBlockAuditor:
         b5_data = block5_contract or {}
         b6_data = block6_contract or {}
 
-        # 1. Quality Score & Ambiguity Auditing
         if fasta_result.quality_score < self.min_quality_score:
             flags.append(
                 AuditFlag(
@@ -245,7 +260,6 @@ class CrossBlockAuditor:
                 )
             )
 
-        # 2. Mutation Counts
         missing_count = len(fasta_result.missing_mutations)
         if missing_count > self.max_missing_diagnostic_mutations:
             flags.append(
@@ -276,7 +290,6 @@ class CrossBlockAuditor:
                 )
             )
 
-        # 3. Upstream Contamination Contract Verification (Bypass Resolution)
         raw_contam = b5_data.get("contamination_fraction")
         contam_frac: Optional[float] = None
         if raw_contam is None:
@@ -312,7 +325,6 @@ class CrossBlockAuditor:
                 )
             )
 
-        # 4. Topological Dual-Stream Concordance with Proportional Subclade Refinement
         concordant, resolved_hg, subclade_detected, subclade_supported = (
             self._evaluate_dual_stream_concordance(
                 sample_id=sample_id,
@@ -326,7 +338,6 @@ class CrossBlockAuditor:
             )
         )
 
-        # 5. Topological Contaminant Affinity
         affinity, contam_hgs = self._evaluate_contaminant_affinity(
             endogenous_hg=fasta_result.haplogroup,
             b5_data=b5_data,
@@ -361,11 +372,11 @@ class CrossBlockAuditor:
                     )
                 )
 
-        # 6. Reference-Aware Chemical Screening of Private Mutations
         private_assessments = self._audit_private_mutations_chemistry(
             private_mutations=fasta_result.private_mutations,
             b4_data=b4_data,
             reference_sequence=reference_sequence,
+            b6_data=b6_data,
         )
 
         spatial_audit_muts = [
@@ -426,23 +437,24 @@ class CrossBlockAuditor:
         reference_sequence: Optional[str],
         flags: List[AuditFlag],
     ) -> Tuple[bool, str, bool, Optional[bool]]:
-        f_hg = fasta_result.haplogroup.strip().upper()
+        orig_f_hg = fasta_result.haplogroup.strip()
+        f_hg = orig_f_hg.upper()
         if vcf_result is None:
-            return True, f_hg, False, None
+            return True, orig_f_hg, False, None
 
-        v_hg = vcf_result.haplogroup.strip().upper()
+        orig_v_hg = vcf_result.haplogroup.strip()
+        v_hg = orig_v_hg.upper()
         if f_hg == v_hg:
-            return True, v_hg, False, None
+            return True, orig_f_hg, False, None
 
-        # Scenario A: VCF topologically descends from FASTA
         if PhylotreeGraph.is_descendant(candidate_child=v_hg, candidate_parent=f_hg):
             subclade_detected = True
             flags.append(
                 AuditFlag(
                     code=AuditCode.SUBCLADE_HETEROPLASMY_REFINEMENT,
                     severity=AuditSeverity.INFO,
-                    message=f"VCF classification refined primary node '{f_hg}' to descendant '{v_hg}'.",
-                    context={"primary_fasta": f_hg, "vcf_subclade": v_hg},
+                    message=f"VCF classification refined primary node '{orig_f_hg}' to descendant '{orig_v_hg}'.",
+                    context={"primary_fasta": orig_f_hg, "vcf_subclade": orig_v_hg},
                 )
             )
 
@@ -460,117 +472,140 @@ class CrossBlockAuditor:
             matching_sites = diff_positions.intersection(b6_pass_sites)
             auth_status = str(b4_data.get("authentication_status") or "").upper()
 
-            # Fail-safe: None means maximum risk
             is_elevated_contam = (
                 contam_fraction is None or contam_fraction >= self.subclade_contam_max_fraction
             )
 
-            # Counting differentiating mutation categories
             damage_transitions: List[str] = []
             solid_variants: List[str] = []
+            spatial_verified_transitions: List[str] = []
 
             for mut in diff_muts:
                 parsed = self._parse_single_mutation(mut, reference_sequence)
-                if parsed and parsed.variant_type == "SNV":
-                    pair = (parsed.ref_base, parsed.alt_base)
-                    if pair in self.DAMAGE_TRANSITIONS and auth_status == "AUTHENTIC_ANCIENT_SUPPORTED":
-                        damage_transitions.append(mut)
-                    else:
-                        solid_variants.append(mut)
-                elif parsed and parsed.variant_type in {"INS", "DEL"}:
-                    solid_variants.append(mut)
+                if not parsed:
+                    continue
 
-            # If contamination is elevated, reject shift outright
+                if parsed.variant_type in {"INS", "DEL"}:
+                    solid_variants.append(mut)
+                    continue
+
+                if parsed.variant_type == "SNV":
+                    pair = (parsed.ref_base, parsed.alt_base)
+                    is_damage_chem = (pair in self.DAMAGE_TRANSITIONS)
+
+                    if not is_damage_chem or auth_status != "AUTHENTIC_ANCIENT_SUPPORTED":
+                        solid_variants.append(mut)
+                        continue
+
+                    site_detail = self._get_site_heteroplasmy_detail(b6_data, parsed.position)
+
+                    if site_detail is not None:
+                        is_suspect = site_detail.get("spatial_damage_suspect")
+                        if is_suspect is False:
+                            solid_variants.append(mut)
+                            spatial_verified_transitions.append(mut)
+                        else:
+                            damage_transitions.append(mut)
+                    else:
+                        damage_transitions.append(mut)
+
             if is_elevated_contam:
                 flags.append(
                     AuditFlag(
                         code=AuditCode.SUSPECT_HETEROPLASMY_SUBCLADE_REJECTED,
                         severity=AuditSeverity.WARNING,
                         message=(
-                            f"Subclade refinement to '{v_hg}' rejected due to elevated or unverified contamination "
-                            f"(frac={contam_fraction}). Retaining primary consensus '{f_hg}'."
+                            f"Subclade refinement to '{orig_v_hg}' rejected due to elevated or unverified contamination "
+                            f"(frac={contam_fraction}). Retaining primary consensus '{orig_f_hg}'."
                         ),
                         context={
-                            "primary_haplogroup": f_hg,
-                            "rejected_subclade": v_hg,
+                            "primary_haplogroup": orig_f_hg,
+                            "rejected_subclade": orig_v_hg,
                             "contamination_fraction": contam_fraction,
                         },
                     )
                 )
-                return True, f_hg, subclade_detected, False
+                return True, orig_f_hg, subclade_detected, False
 
-            # Proportional Refinement: If supported by solid variants or verified heteroplasmy sites
-            if solid_variants or (matching_sites and not damage_transitions):
+            if solid_variants:
                 if damage_transitions:
                     flags.append(
                         AuditFlag(
                             code=AuditCode.DAMAGE_SUSPECT_PRIVATE_MUTATION,
                             severity=AuditSeverity.WARNING,
                             message=(
-                                f"Subclade '{v_hg}' approved based on solid variants {solid_variants}, but "
+                                f"Subclade '{orig_v_hg}' approved based on solid variants {solid_variants}, but "
                                 f"carries suspect deamination transitions {damage_transitions}."
                             ),
                             context={"solid_variants": solid_variants, "suspect_damage": damage_transitions},
                         )
                     )
+
+                msg = f"Subclade '{orig_v_hg}' confirmed by differentiating variants."
+                if spatial_verified_transitions:
+                    msg += f" (spatially verified transitions: {spatial_verified_transitions})"
+
                 flags.append(
                     AuditFlag(
                         code=AuditCode.HETEROPLASMY_SUBCLADE_SUPPORTED,
                         severity=AuditSeverity.INFO,
-                        message=f"Subclade '{v_hg}' confirmed by differentiating variants.",
-                        context={"positions": sorted(list(matching_sites)), "subclade": v_hg},
+                        message=msg,
+                        context={
+                            "positions": sorted(list(matching_sites)),
+                            "subclade": orig_v_hg,
+                            "solid_variants": solid_variants,
+                            "spatial_verified_transitions": spatial_verified_transitions,
+                        },
                     )
                 )
-                return True, v_hg, subclade_detected, True
+                return True, orig_v_hg, subclade_detected, True
 
-            # If purely driven by deamination transitions without solid support, reject shift
             if damage_transitions and not solid_variants:
                 flags.append(
                     AuditFlag(
                         code=AuditCode.SUSPECT_HETEROPLASMY_SUBCLADE_REJECTED,
                         severity=AuditSeverity.WARNING,
                         message=(
-                            f"Subclade refinement to '{v_hg}' rejected: differentiating variants "
-                            f"{damage_transitions} are solely deamination transitions on authentic ancient background."
+                            f"Subclade refinement to '{orig_v_hg}' rejected: differentiating variants "
+                            f"{damage_transitions} are solely deamination transitions on authentic ancient background "
+                            f"without sufficient internal fragment support."
                         ),
                         context={
-                            "primary_haplogroup": f_hg,
-                            "rejected_subclade": v_hg,
+                            "primary_haplogroup": orig_f_hg,
+                            "rejected_subclade": orig_v_hg,
                             "damage_transitions": damage_transitions,
                         },
                     )
                 )
-                return True, f_hg, subclade_detected, False
+                return True, orig_f_hg, subclade_detected, False
 
-            return True, f_hg, subclade_detected, False
+            return True, orig_f_hg, subclade_detected, False
 
-        # Scenario B: FASTA is topologically deeper than VCF
         if PhylotreeGraph.is_descendant(candidate_child=f_hg, candidate_parent=v_hg):
             flags.append(
                 AuditFlag(
                     code=AuditCode.SUBCLADE_FASTA_SPECIFIC,
                     severity=AuditSeverity.INFO,
-                    message=f"Consensus FASTA resolved deeper node '{f_hg}' than VCF '{v_hg}'.",
-                    context={"primary_fasta": f_hg, "vcf_subclade": v_hg},
+                    message=f"Consensus FASTA resolved deeper node '{orig_f_hg}' than VCF '{orig_v_hg}'.",
+                    context={"primary_fasta": orig_f_hg, "vcf_subclade": orig_v_hg},
                 )
             )
-            return True, f_hg, False, None
+            return True, orig_f_hg, False, None
 
-        # Scenario C: Incompatible divergent clades
         flags.append(
             AuditFlag(
                 code=AuditCode.HAPLOGROUP_INPUT_DISCORDANCE,
                 severity=AuditSeverity.WARNING,
-                message=f"Topological divergence between inputs: FASTA='{f_hg}', VCF='{v_hg}'.",
+                message=f"Topological divergence between inputs: FASTA='{orig_f_hg}', VCF='{orig_v_hg}'.",
                 context={
-                    "fasta_haplogroup": f_hg,
-                    "vcf_haplogroup": v_hg,
+                    "fasta_haplogroup": orig_f_hg,
+                    "vcf_haplogroup": orig_v_hg,
                     "fasta_quality": fasta_result.quality_score,
                     "vcf_quality": vcf_result.quality_score,
                 },
             )
         )
-        return False, f_hg, False, None
+        return False, orig_f_hg, False, None
 
     def _evaluate_contaminant_affinity(
         self,
@@ -619,14 +654,23 @@ class CrossBlockAuditor:
         reference_sequence: Optional[str],
     ) -> Optional[ParsedMutation]:
         clean = mut_str.strip().upper()
+        is_back = clean.endswith("!")
+        unflagged = clean.rstrip("!")
 
-        ins_match = self.INS_REGEX.match(clean)
+        ins_match = self.INS_REGEX.match(unflagged)
         if ins_match:
             pos = int(ins_match.group(1))
             alt_b = ins_match.group(3).upper()
-            return ParsedMutation(raw=clean, variant_type="INS", position=pos, ref_base=".", alt_base=alt_b)
+            return ParsedMutation(
+                raw=clean,
+                variant_type="INS",
+                position=pos,
+                ref_base=".",
+                alt_base=alt_b,
+                is_back_mutation=is_back,
+            )
 
-        del_match = self.DEL_REGEX.match(clean)
+        del_match = self.DEL_REGEX.match(unflagged)
         if del_match:
             pos = int(del_match.group(2))
             raw_ref = (del_match.group(1) or "").lstrip(">").upper()
@@ -634,9 +678,16 @@ class CrossBlockAuditor:
             if ref_b == "N" and reference_sequence is not None:
                 if 1 <= pos <= len(reference_sequence):
                     ref_b = reference_sequence[pos - 1].upper()
-            return ParsedMutation(raw=clean, variant_type="DEL", position=pos, ref_base=ref_b, alt_base="DEL")
+            return ParsedMutation(
+                raw=clean,
+                variant_type="DEL",
+                position=pos,
+                ref_base=ref_b,
+                alt_base="DEL",
+                is_back_mutation=is_back,
+            )
 
-        snv_match = self.SNV_REGEX.match(clean)
+        snv_match = self.SNV_REGEX.match(unflagged)
         if snv_match:
             pos = int(snv_match.group(2))
             raw_ref = (snv_match.group(1) or "").lstrip(">").upper()
@@ -645,19 +696,36 @@ class CrossBlockAuditor:
             if ref_b == "N" and reference_sequence is not None:
                 if 1 <= pos <= len(reference_sequence):
                     ref_b = reference_sequence[pos - 1].upper()
-            return ParsedMutation(raw=clean, variant_type="SNV", position=pos, ref_base=ref_b, alt_base=alt_b)
+            return ParsedMutation(
+                raw=clean,
+                variant_type="SNV",
+                position=pos,
+                ref_base=ref_b,
+                alt_base=alt_b,
+                is_back_mutation=is_back,
+            )
 
-        return ParsedMutation(raw=clean, variant_type="UNKNOWN", position=0, ref_base="N", alt_base="N")
+        return ParsedMutation(
+            raw=clean,
+            variant_type="UNKNOWN",
+            position=0,
+            ref_base="N",
+            alt_base="N",
+            is_back_mutation=is_back,
+        )
 
     def _audit_private_mutations_chemistry(
         self,
         private_mutations: List[str],
         b4_data: Dict[str, Any],
         reference_sequence: Optional[str],
+        b6_data: Optional[Dict[str, Any]] = None,
     ) -> List[PrivateMutationAssessment]:
         auth_status = str(b4_data.get("authentication_status") or "").upper()
         is_authentic_ancient = (auth_status == "AUTHENTIC_ANCIENT_SUPPORTED")
         assessments: List[PrivateMutationAssessment] = []
+
+        ref_len = len(reference_sequence) if reference_sequence else 16569
 
         for mut_str in private_mutations:
             clean_mut = mut_str.strip().upper()
@@ -677,28 +745,34 @@ class CrossBlockAuditor:
                 )
                 continue
 
+            # Dynamic terminal distance computation across circular boundaries
+            is_terminal_region = (parsed.position <= 500) or (parsed.position >= (ref_len - 500))
+
             if parsed.variant_type == "INS":
+                if is_authentic_ancient and is_terminal_region:
+                    cls = PrivateMutationDamageClass.INDEL_SOFT_CLIP_SUSPECT
+                    rationale = "Terminal insertion in authentic ancient sample; suspect mapping, adapter ligation, or soft-clipping artifact."
+                else:
+                    cls = PrivateMutationDamageClass.UNASSESSED
+                    rationale = "Internal insertion variant; indels bypass point substitution deamination triage."
+
                 assessments.append(
                     PrivateMutationAssessment(
                         mutation=clean_mut,
                         position=parsed.position,
                         ref_base=parsed.ref_base,
                         alt_base=parsed.alt_base,
-                        classification=PrivateMutationDamageClass.UNASSESSED,
+                        classification=cls,
                         evidence_source="BLOCK4_CHEMISTRY_SCREEN",
-                        rationale="Insertion variant; indels bypass point substitution deamination triage.",
+                        rationale=rationale,
                     )
                 )
                 continue
 
             if parsed.variant_type == "DEL":
-                # Check for suspect terminal deletion / soft-clip artifact in aDNA
-                is_terminal_region = (parsed.position <= 500) or (parsed.position >= 16000)
                 if is_authentic_ancient and is_terminal_region:
                     cls = PrivateMutationDamageClass.INDEL_SOFT_CLIP_SUSPECT
-                    rationale = (
-                        "Terminal deletion in authentic ancient sample; suspect mapping or soft-clipping artifact."
-                    )
+                    rationale = "Terminal deletion in authentic ancient sample; suspect mapping or soft-clipping artifact."
                 else:
                     cls = PrivateMutationDamageClass.UNASSESSED
                     rationale = "Internal deletion variant; indels bypass substitution triage."
@@ -740,11 +814,19 @@ class CrossBlockAuditor:
                 rationale = "Transversion substitution chemically incompatible with hydrolytic deamination."
             elif pair in self.DAMAGE_TRANSITIONS:
                 if is_authentic_ancient:
-                    cls = PrivateMutationDamageClass.TRANSITION_REQUIRES_SPATIAL_AUDIT
-                    rationale = (
-                        "Transition (C->T or G->A) on authentic ancient background. "
-                        "Requires spatial terminal read audit in BAM to differentiate deamination from true variant."
-                    )
+                    site_detail = self._get_site_heteroplasmy_detail(b6_data, pos) if b6_data else None
+                    if site_detail is not None and site_detail.get("spatial_damage_suspect") is False:
+                        cls = PrivateMutationDamageClass.TRANSITION_SPATIAL_VERIFIED
+                        rationale = (
+                            "Transition (C->T or G->A) on authentic ancient background verified by "
+                            "Block 6 spatial engine with sufficient internal physical fragment support."
+                        )
+                    else:
+                        cls = PrivateMutationDamageClass.TRANSITION_REQUIRES_SPATIAL_AUDIT
+                        rationale = (
+                            "Transition (C->T or G->A) on authentic ancient background. "
+                            "Requires spatial terminal read audit in BAM to differentiate deamination from true variant."
+                        )
                 else:
                     cls = PrivateMutationDamageClass.TRANSITION_UNSUPPORTED_DAMAGE
                     rationale = "Transition observed on unauthenticated or modern reference background."
