@@ -20,25 +20,17 @@ data/
 
 # Reference genomes and external databases
 data/reference/schmutzi_db/
-data/reference/*.fasta
-data/reference/*.fa
-data/reference/*.fai
-data/reference/*.bwt
-data/reference/*.pac
-data/reference/*.ann
-data/reference/*.amb
-data/reference/*.sa
+
 
 # Output, test, and benchmark directories
 results/
+reference/
 benchmark_baseline/
 outcomebasecheckbasesettings/
 outcomestrictsettings/
 build/
 dist/
-scripts/
 operational_files/
-tests/
 # Intermediate / temporary bioinformatics files
 *.tmp
 *.temp
