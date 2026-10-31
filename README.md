@@ -1,6 +1,5 @@
 
 
-
 # 🧬 mtDNA Forensic & Ancient DNA Analysis Pipeline
 
 [![Pipeline Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](config/default_config.yaml)
@@ -132,7 +131,7 @@ The pipeline employs a strictly compartmentalized **8-Block Modular Architecture
 If you do not have Conda installed on your Linux system or inside your WSL2 Ubuntu terminal, download and install **Miniconda**:
 
 ```bash
-wget [https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh](https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh) -O /tmp/miniconda.sh
+wget "(https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh)" -O /tmp/miniconda.sh
 bash /tmp/miniconda.sh -b -p $HOME/miniconda
 $HOME/miniconda/bin/conda init bash
 $HOME/miniconda/bin/conda init zsh
@@ -147,7 +146,7 @@ Clone the repository directly into your Linux home directory (or inside WSL2):
 
 ```bash
 cd ~
-git clone [https://github.com/oscar-pizzoli/amtdna-variant-pipeline.git](https://github.com/oscar-pizzoli/amtdna-variant-pipeline.git)
+git clone "https://github.com/oscar-pizzoli/amtdna-variant-pipeline.git"
 cd amtdna-variant-pipeline
 
 ```
@@ -185,7 +184,7 @@ Download the canonical RefSeq rCRS FASTA (`NC_012920.1`) into `data/reference/rC
 
 ```bash
 mkdir -p data/reference
-curl -s "[https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_012920.1&rettype=fasta](https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_012920.1&rettype=fasta)" > data/reference/rCRS.fasta
+curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_012920.1&rettype=fasta" > data/reference/rCRS.fasta
 samtools faidx data/reference/rCRS.fasta
 bwa index data/reference/rCRS.fasta
 
@@ -197,7 +196,7 @@ Extract the official 197 human mitogenome allele frequency database (`share/schm
 
 ```bash
 mkdir -p data/reference/schmutzi_db
-git clone --depth 1 [https://github.com/grenaud/schmutzi.git](https://github.com/grenaud/schmutzi.git) /tmp/schmutzi_repo
+git clone --depth 1 "https://github.com/grenaud/schmutzi.git" /tmp/schmutzi_repo
 cp -r /tmp/schmutzi_repo/share/schmutzi/alleleFreqMT/197 data/reference/schmutzi_db/
 rm -rf /tmp/schmutzi_repo
 
@@ -323,7 +322,7 @@ fastq-dump --split-files --gzip SRR10560731 -O data/raw_fastq/
 
 ```bash
 mkdir -p data/raw_fastq
-wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/ERR183/008/ERR1830678/ERR1830678.fastq.gz -P data/raw_fastq/
+wget "ftp://ftp.sra.ebi.ac.uk/vol1/fastq/ERR183/008/ERR1830678/ERR1830678.fastq.gz" -P data/raw_fastq/
 
 ```
 
@@ -520,15 +519,3 @@ If you use this pipeline in academic or forensic casework, please cite:
 ```
 
 ---
-
-### Modifiche Principali Applicate:
-1. **Comandi Bash puliti**[cite: 31]: i link come `wget [https://...](https://...)` sono stati sostituiti con `wget https://...`, evitando che le parentesi quadre vengano interpretate come metacaratteri dalla shell[cite: 31].
-2. **Rimozione della coda superflua**[cite: 31]: la sezione "Comandi per Aggiornare GitHub e il Secondo PC" incollata in fondo è stata eliminata[cite: 31].
-3. **Chiusura dei blocchi**: tutti i blocchi ` ```text ` e ` ```bash ` sono isolati con fine riga puliti.
-
-<ElicitationsGroup message="Se vuoi procedere con l'aggiornamento o hai altri controlli da fare:">
-  <Elicitation label="Salva e pusha su Git" query="Come aggiorno il README su GitHub con questi fix?" />
-  <Elicitation label="Test AdapterRemoval" query="Ho aggiornato trimmer.py, come verifico che AdapterRemoval v3 funzioni ora?" />
-</ElicitationsGroup>
-
-```
