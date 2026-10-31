@@ -131,7 +131,7 @@ The pipeline employs a strictly compartmentalized **8-Block Modular Architecture
 If you do not have Conda installed on your Linux system or inside your WSL2 Ubuntu terminal, download and install **Miniconda**:
 
 ```bash
-wget "(https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh)" -O /tmp/miniconda.sh
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
 bash /tmp/miniconda.sh -b -p $HOME/miniconda
 $HOME/miniconda/bin/conda init bash
 $HOME/miniconda/bin/conda init zsh
