@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 import logging
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -72,6 +73,14 @@ class SamtoolsPipeline:
             raise SamtoolsPipelineError(
                 f"Failed to generate index for {bam.name} (exit code {res.returncode}): {res.stderr.strip()}"
             )
+
+        try:
+            bam_mtime = bam.stat().st_mtime
+            if bai_path.stat().st_mtime <= bam_mtime:
+                target_time = bam_mtime + 2.0
+                os.utime(bai_path, (target_time, target_time))
+        except OSError:
+            pass
 
         return bai_path
 

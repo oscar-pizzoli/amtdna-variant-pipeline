@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 import logging
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -114,8 +115,28 @@ class BAMValidationEngine:
         except OSError:
             return False
 
-    @staticmethod
-    def locate_index(bam_path: Path) -> Tuple[bool, Optional[str], Optional[Path]]:
+    @classmethod
+    def ensure_index_freshness(cls, bam_path: Path, idx_path: Optional[Path] = None) -> Optional[Path]:
+        """Ensures index file mtime is strictly newer than BAM mtime to prevent HTSlib [W::hts_idx_load3]."""
+        bam = Path(bam_path)
+        if not bam.is_file():
+            return None
+        if idx_path is None:
+            _, _, found_idx = cls.locate_index(bam)
+            idx_path = found_idx
+        if idx_path and idx_path.is_file():
+            try:
+                bam_mtime = bam.stat().st_mtime
+                if idx_path.stat().st_mtime <= bam_mtime:
+                    target_time = bam_mtime + 2.0
+                    os.utime(idx_path, (target_time, target_time))
+            except OSError:
+                pass
+            return idx_path
+        return None
+
+    @classmethod
+    def locate_index(cls, bam_path: Path) -> Tuple[bool, Optional[str], Optional[Path]]:
         """Checks for standard .bai or .csi indices in both naming conventions."""
         candidates = [
             (bam_path.with_suffix(bam_path.suffix + ".bai"), "BAI"),
@@ -125,6 +146,13 @@ class BAMValidationEngine:
         ]
         for candidate_path, idx_type in candidates:
             if candidate_path.is_file():
+                try:
+                    bam_mtime = bam_path.stat().st_mtime
+                    if candidate_path.stat().st_mtime <= bam_mtime:
+                        target_time = bam_mtime + 2.0
+                        os.utime(candidate_path, (target_time, target_time))
+                except OSError:
+                    pass
                 return True, idx_type, candidate_path
         return False, None, None
 

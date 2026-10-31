@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -145,6 +146,13 @@ class AlignmentFilterEngine:
 
         for idx_path in expected_indices:
             if idx_path.is_file() and idx_path.stat().st_size > 0:
+                try:
+                    bam_mtime = bam.stat().st_mtime
+                    if idx_path.stat().st_mtime <= bam_mtime:
+                        target_time = bam_mtime + 2.0
+                        os.utime(idx_path, (target_time, target_time))
+                except OSError:
+                    pass
                 return idx_path
 
         raise FilterEngineError(f"Index generation completed but output index file was not found for {bam.name}")

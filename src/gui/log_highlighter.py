@@ -15,7 +15,7 @@ ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 # Enhanced single-pass tokenization pattern with strict exclusions
 TOKEN_RE = re.compile(
     r"(?P<TIMESTAMP>\[?\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?\b\]?)"
-    r"|(?P<LEVEL>\[(INFO|DEBUG|WARNING|ERROR|CRITICAL)\])"
+    r"|(?P<LEVEL>\[(?:INFO|DEBUG|WARNING|ERROR|CRITICAL)\]|\[W::[A-Za-z0-9_]+\]|\[E::[A-Za-z0-9_]+\]|\[M::[A-Za-z0-9_]+\])"
     r"|(?P<BLOCK>▶\s*BLOCK\s*\d+:[^\n<]*)"
     r"|(?P<STAGE>\[Stage\s*\d+/\d+\][^\n<]*)"
     r"|(?P<SAMPLE>\[(?!(?:INFO|DEBUG|WARNING|ERROR|CRITICAL|Stage|BLOCK|W::|E::|M::|fast-screen|adna|bwa|samtools)\b)[A-Za-z0-9_\-\.]{2,}\])"
@@ -100,7 +100,8 @@ class LogHighlighter:
                 return f'<span class="ln-traceback">{escaped_line}</span>', True
 
         is_critical = any(tag in line for tag in ("[CRITICAL]", "CRITICAL:"))
-        is_error = any(tag in line for tag in ("[ERROR]", "ERROR:"))
+        is_error = any(tag in line for tag in ("[ERROR]", "ERROR:", "[E::"))
+        is_warning = any(tag in line for tag in ("[WARNING]", "WARNING:", "[W::", "W::"))
 
         def _replace_token(match: re.Match) -> str:
             group_dict = match.groupdict()
@@ -109,8 +110,15 @@ class LogHighlighter:
                     if key == "TIMESTAMP":
                         return f'<span class="tk-ts">{val}</span>'
                     elif key == "LEVEL":
-                        lvl = val.strip("[]")
-                        return f'<span class="tk-lvl tk-{lvl.lower()}">[{lvl}]</span>'
+                        if val.startswith("[W::"):
+                            return f'<span class="tk-lvl tk-warning">{val}</span>'
+                        elif val.startswith("[E::"):
+                            return f'<span class="tk-lvl tk-error">{val}</span>'
+                        elif val.startswith("[M::"):
+                            return f'<span class="tk-lvl tk-info">{val}</span>'
+                        else:
+                            lvl = val.strip("[]")
+                            return f'<span class="tk-lvl tk-{lvl.lower()}">[{lvl}]</span>'
                     elif key == "BLOCK":
                         return f'<span class="tk-block">{val}</span>'
                     elif key == "STAGE":
@@ -128,6 +136,8 @@ class LogHighlighter:
             return f'<span class="ln-critical">{tokenized}</span>', False
         if is_error:
             return f'<span class="ln-error">{tokenized}</span>', False
+        if is_warning:
+            return f'<span class="ln-warning">{tokenized}</span>', False
 
         return tokenized, new_in_traceback
 
@@ -186,6 +196,16 @@ class LogHighlighter:
         .hud-terminal .tk-block {{ color: #34D399 !important; font-weight: bold !important; }}
         .hud-terminal .tk-stage {{ color: #2DD4BF !important; font-weight: bold !important; }}
         .hud-terminal .tk-metric {{ color: #FDE047 !important; font-weight: bold !important; }}
+        .hud-terminal .ln-warning {{
+            background: rgba(245, 158, 11, 0.16) !important;
+            color: #FDE68A !important;
+            border-left: 4px solid #F59E0B !important;
+            display: block;
+            border-radius: 2px;
+            padding: 2px 6px;
+            margin: 2px 0;
+            font-weight: 500;
+        }}
         .hud-terminal .ln-error {{ background: rgba(239, 68, 68, 0.22); color: #FCA5A5 !important; display: block; border-radius: 2px; padding: 0 2px; }}
         .hud-terminal .ln-critical {{
             background: rgba(220, 38, 38, 0.28) !important;

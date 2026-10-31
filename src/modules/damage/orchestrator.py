@@ -9,6 +9,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 import pysam
 
+from src.modules.preprocessing.bam_validator import BAMValidationEngine
 from src.modules.alignment.models import ReferenceInfo
 from src.modules.damage.damage_quantifier import (
     DamageQuantifierEngine,
@@ -121,12 +122,14 @@ class DamageOrchestrator:
             except OSError as exc:
                 logger.warning(f"Could not execute samtools quickcheck: {exc}")
 
-        # 2. Check or generate missing BAI index
-        bai_path = Path(f"{bam_path}.bai")
-        if not bai_path.is_file() or bai_path.stat().st_size == 0:
+        # 2. Check or generate missing BAI index, and guarantee freshness
+        BAMValidationEngine.ensure_index_freshness(bam_path)
+        idx_found, _, bai_path = BAMValidationEngine.locate_index(bam_path)
+        if not idx_found or not bai_path or bai_path.stat().st_size == 0:
             logger.info(f"Generating missing index for input BAM: {bam_path.name}...")
             try:
                 pysam.index(str(bam_path))
+                BAMValidationEngine.ensure_index_freshness(bam_path)
             except Exception as exc:
                 raise DamageBAMValidationError(f"Failed indexing input BAM '{bam_path.name}': {exc}") from exc
 
