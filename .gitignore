@@ -7,7 +7,7 @@
 *.fastq.gz
 *.fq
 *.fq.gz
-
+*Zone.Identifier
 
 # Alignments and genomic index files
 *.bam
