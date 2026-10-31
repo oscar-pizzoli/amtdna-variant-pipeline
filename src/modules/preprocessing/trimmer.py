@@ -1,6 +1,7 @@
 """Adapter trimming, conservative read merging, physical output verification, and metrics extraction via AdapterRemoval."""
 
 import gzip
+import json
 import logging
 from pathlib import Path
 import re
@@ -28,15 +29,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class PreprocessingEngine:
-    """Orchestrates conservative FASTQ adapter trimming and read merging using AdapterRemoval."""
+    """Orchestrates conservative FASTQ adapter trimming and read merging using AdapterRemoval (v2 and v3)."""
 
     @classmethod
     def get_binary_name(cls) -> Optional[str]:
         """Detects if AdapterRemoval is registered as uppercase or lowercase in system PATH."""
-        if shutil.which("AdapterRemoval"):
-            return "AdapterRemoval"
-        if shutil.which("adapterremoval"):
-            return "adapterremoval"
+        for candidate in ("AdapterRemoval", "adapterremoval", "adapterremoval3"):
+            if shutil.which(candidate):
+                return candidate
         return None
 
     @classmethod
@@ -54,7 +54,7 @@ class PreprocessingEngine:
                 timeout=30,
             )
             raw_output = f"{res.stdout}\n{res.stderr}".strip()
-            match = re.search(r"AdapterRemoval\s+(?:ver(?:sion|\.)?)\s*([\d\.]+)", raw_output, re.IGNORECASE)
+            match = re.search(r"AdapterRemoval\S*\s+(?:ver(?:sion|\.)?\s*|v)?([\d\.]+)", raw_output, re.IGNORECASE)
             version_str = match.group(1) if match else raw_output.split("\n")[0]
             return version_str, raw_output
         except Exception as exc:
@@ -69,13 +69,11 @@ class PreprocessingEngine:
         warnings_list: List[str],
     ) -> None:
         """Enforces arithmetic consistency and structural invariants on parsed AdapterRemoval metrics."""
-        # 1. Parity check for paired-end runs
         if is_paired and metrics.raw_total_reads is not None and metrics.raw_total_reads % 2 != 0:
             warnings_list.append(
                 f"Structural anomaly: raw_total_reads ({metrics.raw_total_reads}) is odd in a Paired-End run."
             )
 
-        # 2. Biological read conservation check (Raw ≈ Surviving + Discarded)
         if (
             metrics.raw_total_reads is not None
             and metrics.surviving_original_reads is not None
@@ -127,7 +125,6 @@ class PreprocessingEngine:
                         total_bases += s_len
                         total_len += s_len
 
-                        # Vectorized byte counts in C
                         gc_bases += seq.count(b"G") + seq.count(b"C") + seq.count(b"g") + seq.count(b"c")
                         q20_bases += sum(1 for b in qual if b >= q_thresh_20)
                         q30_bases += sum(1 for b in qual if b >= q_thresh_30)
@@ -146,13 +143,76 @@ class PreprocessingEngine:
         return gc_pct, q20_rate, q30_rate, mean_len
 
     @classmethod
+    def _parse_v3_json_settings(
+        cls,
+        json_settings_file: Path,
+        compat_settings_file: Path,
+        is_paired: bool,
+        warnings_list: List[str],
+    ) -> PreprocessingMetrics:
+        """Parses AdapterRemoval v3 .settings.json file and writes a v2-compatible .settings file for stage caching."""
+        metrics = PreprocessingMetrics()
+        try:
+            with open(json_settings_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            warnings_list.append(f"Failed reading AdapterRemoval v3 JSON settings {json_settings_file.name}: {exc}")
+            return metrics
+
+        # Copy to .settings so StageTracker cache checks on <sample>.settings succeed
+        if not compat_settings_file.is_file():
+            try:
+                shutil.copy2(json_settings_file, compat_settings_file)
+            except OSError:
+                pass
+
+        stats = data.get("statistics", {}) or data.get("reads", {}) or data
+
+        def _sum_stat(val: Any) -> Optional[int]:
+            if isinstance(val, int):
+                return val
+            if isinstance(val, list) and all(isinstance(x, (int, float)) for x in val):
+                return int(sum(val))
+            return None
+
+        raw_total = (
+            _sum_stat(stats.get("input_reads"))
+            or _sum_stat(stats.get("total_reads"))
+            or _sum_stat(stats.get("reads"))
+        )
+        if raw_total is not None:
+            metrics.raw_total_reads = raw_total
+            if is_paired:
+                metrics.raw_read_pairs = raw_total // 2
+
+        merged = _sum_stat(stats.get("merged")) or _sum_stat(stats.get("collapsed"))
+        if merged is not None:
+            metrics.merged_fragments = merged
+
+        discarded = _sum_stat(stats.get("discarded"))
+        if discarded is not None:
+            metrics.discarded_reads = discarded
+
+        retained_reads = _sum_stat(stats.get("retained_reads")) or _sum_stat(stats.get("retained"))
+        if not is_paired and retained_reads is not None:
+            metrics.singleton_reads = retained_reads
+            metrics.surviving_original_reads = retained_reads
+            metrics.surviving_sequenced_fragments = retained_reads
+
+        return metrics
+
+    @classmethod
     def parse_adapterremoval_settings(
         cls,
         settings_file: Path,
         is_paired: bool,
         warnings_list: List[str],
     ) -> PreprocessingMetrics:
-        """Parses AdapterRemoval .settings output file into structured metrics with strict None handling."""
+        """Parses AdapterRemoval .settings (v2) or .settings.json (v3) output file into structured metrics."""
+        json_candidate = Path(f"{settings_file}.json")
+        if not settings_file.is_file() and json_candidate.is_file():
+            return cls._parse_v3_json_settings(json_candidate, settings_file, is_paired, warnings_list)
+
         metrics = PreprocessingMetrics()
         if not settings_file.is_file():
             warnings_list.append(f"AdapterRemoval settings file not found: {settings_file.name}")
@@ -161,6 +221,8 @@ class PreprocessingEngine:
         try:
             with open(settings_file, "r", encoding="utf-8") as stream:
                 content = stream.read()
+            if content.lstrip().startswith("{"):
+                return cls._parse_v3_json_settings(settings_file, settings_file, is_paired, warnings_list)
         except OSError as exc:
             warnings_list.append(f"I/O error reading .settings file {settings_file.name}: {exc}")
             return metrics
@@ -315,8 +377,6 @@ class PreprocessingEngine:
                 tot_adapt = (int(m_adapt_m1.group(1)) if m_adapt_m1 else 0) + (int(m_adapt_m2.group(1)) if m_adapt_m2 else 0)
                 metrics.adapter_trimmed_reads_pct = round((tot_adapt / metrics.raw_total_reads) * 100.0, 2)
 
-            # Biological fallback: in heavily degraded aDNA libraries where all reads are merged,
-            # the fraction of adapter-trimmed sequences corresponds directly to the collapsed fraction
             if metrics.adapter_trimmed_reads_pct is None and metrics.merged_fraction_raw is not None:
                 metrics.adapter_trimmed_reads_pct = round(metrics.merged_fraction_raw * 100.0, 2)
 
@@ -347,35 +407,56 @@ class PreprocessingEngine:
         run_started_ts: float,
         integrity_mode: str,
     ) -> Tuple[ProcessedReads, List[str], List[str]]:
-        """Scans and strictly verifies that newly generated outputs match run parameters and pass integrity gates."""
+        """Scans and strictly verifies newly generated outputs across both AdapterRemoval v2 and v3 naming conventions."""
         processed = ProcessedReads()
         warnings: List[str] = []
         errors: List[str] = []
 
+        # Supports both AdapterRemoval v2 (.collapsed.gz) and v3 (.merged.fastq.gz)
         candidate_merged = [
             Path(f"{base_prefix}.collapsed.gz"),
             Path(f"{base_prefix}.collapsed.truncated.gz"),
+            Path(f"{base_prefix}.merged.fastq.gz"),
+            Path(f"{base_prefix}.merged.fq.gz"),
             Path(f"{base_prefix}.collapsed"),
+            Path(f"{base_prefix}.merged.fastq"),
         ]
+        # Supports both AdapterRemoval v2 (.pair1.truncated.gz) and v3 (.r1.fastq.gz)
         candidate_pair1 = [
             Path(f"{base_prefix}.pair1.truncated.gz"),
             Path(f"{base_prefix}.pair1.gz"),
+            Path(f"{base_prefix}.r1.fastq.gz"),
+            Path(f"{base_prefix}.r1.fq.gz"),
             Path(f"{base_prefix}.pair1.truncated"),
             Path(f"{base_prefix}.pair1"),
+            Path(f"{base_prefix}.r1.fastq"),
         ]
         candidate_pair2 = [
             Path(f"{base_prefix}.pair2.truncated.gz"),
             Path(f"{base_prefix}.pair2.gz"),
+            Path(f"{base_prefix}.r2.fastq.gz"),
+            Path(f"{base_prefix}.r2.fq.gz"),
             Path(f"{base_prefix}.pair2.truncated"),
             Path(f"{base_prefix}.pair2"),
+            Path(f"{base_prefix}.r2.fastq"),
         ]
+        # Supports both AdapterRemoval v2 (.truncated.gz / .singleton.truncated.gz) and v3 (.singleton.fastq.gz / SE .r1.fastq.gz)
         candidate_singletons = [
             Path(f"{base_prefix}.singleton.truncated.gz"),
             Path(f"{base_prefix}.singleton.gz"),
+            Path(f"{base_prefix}.singleton.fastq.gz"),
+            Path(f"{base_prefix}.singleton.fq.gz"),
             Path(f"{base_prefix}.truncated.gz"),
             Path(f"{base_prefix}.singleton.truncated"),
             Path(f"{base_prefix}.truncated"),
+            Path(f"{base_prefix}.singleton.fastq"),
         ]
+        if not is_paired:
+            candidate_singletons.extend([
+                Path(f"{base_prefix}.r1.fastq.gz"),
+                Path(f"{base_prefix}.r1.fq.gz"),
+                Path(f"{base_prefix}.r1.fastq"),
+            ])
 
         def _is_fresh_artifact(p: Path) -> bool:
             return p.is_file() and p.stat().st_size > 0 and (p.stat().st_mtime >= run_started_ts - 2.0)
@@ -533,16 +614,23 @@ class PreprocessingEngine:
         stdout_log = log_dir / f"{sample.sample_id}.adapterremoval.log"
         stderr_log = log_dir / f"{sample.sample_id}.adapterremoval.err"
 
-        # 3. Command construction
+        # 3. Detect version & construct command
+        tool_version, raw_version = cls.get_adapterremoval_version()
+        is_v3 = str(tool_version).startswith("3.") or "adapterremoval3" in raw_version.lower()
+
         cmd = [
             binary,
             "--basename", str(base_prefix),
             "--minlength", str(min_read_length),
-            "--qualitybase", str(active_quality_base),
-            "--qualitymax", str(active_quality_max),
             "--threads", str(threads),
             "--gzip",
         ]
+        if not is_v3:
+            cmd.extend([
+                "--qualitybase", str(active_quality_base),
+                "--qualitymax", str(active_quality_max),
+            ])
+
         if is_paired:
             cmd.extend([
                 "--file1", str(r1_path),
@@ -562,7 +650,6 @@ class PreprocessingEngine:
             cmd.append("--trimns")
 
         # 4. Audit trail
-        tool_version, raw_version = cls.get_adapterremoval_version()
         sample.tool_meta = ToolMetadata(
             tool_name=PreprocessingTool.ADAPTER_REMOVAL,
             tool_version=tool_version,
@@ -617,7 +704,7 @@ class PreprocessingEngine:
             sample.validation.status = ValidationStatus.FAIL
             raise RuntimeError(f"[{sample.sample_id}] {err_msg}")
 
-        # 6. Parse metrics from .settings
+        # 6. Parse metrics from .settings or .settings.json
         sample.metrics = cls.parse_adapterremoval_settings(
             settings_file=settings_file,
             is_paired=is_paired,
@@ -642,6 +729,22 @@ class PreprocessingEngine:
             sample.validation.status = ValidationStatus.FAIL
             raise RuntimeError(f"[{sample.sample_id}] Output validation failed: {'; '.join(out_errors)}")
 
+        # Fallback read count computation if AdapterRemoval v3 JSON omitted specific counters
+        if not sample.metrics.surviving_original_reads:
+            m_cnt = IntegrityEngine.fast_count_fastq_reads(processed.merged_fastq) if processed.merged_fastq else 0
+            p1_cnt = IntegrityEngine.fast_count_fastq_reads(processed.paired_r1_fastq) if processed.paired_r1_fastq else 0
+            s_cnt = IntegrityEngine.fast_count_fastq_reads(processed.singleton_fastq) if processed.singleton_fastq else 0
+            if is_paired:
+                sample.metrics.merged_fragments = m_cnt if processed.merged_fastq else None
+                sample.metrics.surviving_read_pairs = p1_cnt if processed.paired_r1_fastq else None
+                sample.metrics.singleton_reads = s_cnt
+                sample.metrics.surviving_original_reads = (p1_cnt * 2) + (m_cnt * 2) + s_cnt
+                sample.metrics.surviving_sequenced_fragments = p1_cnt + m_cnt + s_cnt
+            else:
+                sample.metrics.singleton_reads = s_cnt
+                sample.metrics.surviving_original_reads = s_cnt
+                sample.metrics.surviving_sequenced_fragments = s_cnt
+
         # 8. Compute post-trimming quality metrics (GC%, Q20, Q30, and post-read length)
         active_outputs = [
             f for f in [
@@ -663,7 +766,6 @@ class PreprocessingEngine:
         if sample.metrics.mean_read_length_post is None:
             sample.metrics.mean_read_length_post = sampled_post_len
 
-        # Fallback for mean_read_length_pre if not parsed from .settings
         if sample.metrics.mean_read_length_pre is None and r1_path and r1_path.is_file():
             _, _, _, sampled_pre_len = cls.compute_post_trimming_qc(
                 fastq_paths=[r1_path],
@@ -672,7 +774,6 @@ class PreprocessingEngine:
             )
             sample.metrics.mean_read_length_pre = sampled_pre_len
 
-        # Final guarantee for adapter_trimmed_reads_pct on merged reads
         if sample.metrics.adapter_trimmed_reads_pct is None and sample.metrics.merged_fraction_raw is not None:
             sample.metrics.adapter_trimmed_reads_pct = round(sample.metrics.merged_fraction_raw * 100.0, 2)
 
@@ -728,7 +829,7 @@ class PreprocessingEngine:
             quality_base = prep_cfg.get("quality_base", None)
             quality_max = prep_cfg.get("quality_max", None)
             integrity_mode = str(config.get("integrity", {}).get("mode", "fast"))
-            results_dir = _resolve_dir(out_cfg.get("results_dir"), PROJECT_ROOT / "results")
+            op_dir = _resolve_dir(out_cfg.get("operational_files_dir"), PROJECT_ROOT / "operational_files")
         else:
             min_length = int(getattr(config, "min_read_length", 30))
             min_overlap = int(getattr(config, "min_merge_overlap", 11))
@@ -738,10 +839,10 @@ class PreprocessingEngine:
             quality_base = getattr(config, "quality_base", None)
             quality_max = getattr(config, "quality_max", None)
             integrity_mode = str(getattr(config, "integrity_mode", "fast"))
-            results_dir = _resolve_dir(getattr(config, "results_dir", None), PROJECT_ROOT / "results")
+            op_dir = _resolve_dir(getattr(config, "operational_files_dir", None), PROJECT_ROOT / "operational_files")
 
-        out_prep_dir = results_dir / "alignment" / sample.sample_id / "trimmed"
-        log_dir = results_dir / "logs" / "preprocessing"
+        out_prep_dir = op_dir / "alignment" / sample.sample_id / "trimmed"
+        log_dir = op_dir / "logs" / "preprocessing"
 
         cls.run_adapterremoval(
             sample=sample,
