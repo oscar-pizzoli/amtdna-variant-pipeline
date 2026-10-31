@@ -1,6 +1,6 @@
 
 
-```markdown
+
 # 🧬 mtDNA Forensic & Ancient DNA Analysis Pipeline
 
 [![Pipeline Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](config/default_config.yaml)
