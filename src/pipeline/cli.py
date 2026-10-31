@@ -11,7 +11,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pipeline.runner import EndToEndPipelineRunner, PipelineExecutionError
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.pipeline.runner import EndToEndPipelineRunner
+
+from src.utils.logger import configure_root_logger
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -61,13 +66,13 @@ def parse_arguments() -> argparse.Namespace:
         "--log-level",
         type=str,
         default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging verbosity level (default: INFO).",
     )
     return parser.parse_args()
 
 
-def resolve_input_directory(orchestrator: EndToEndPipelineRunner, cli_input_dir: Path | None) -> Path:
+def resolve_input_directory(orchestrator: "EndToEndPipelineRunner", cli_input_dir: Path | None) -> Path:
     """Resolve physical input directory based on input format and configuration."""
     if cli_input_dir:
         return cli_input_dir
@@ -89,12 +94,9 @@ def main() -> None:
     args = parse_arguments()
 
     numeric_level = getattr(logging, args.log_level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=numeric_level,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        force=True,
-    )
+    configure_root_logger(level=numeric_level)
+
+    from src.pipeline.runner import EndToEndPipelineRunner, PipelineExecutionError
 
     try:
         orchestrator = EndToEndPipelineRunner(
@@ -111,7 +113,7 @@ def main() -> None:
         logging.warning("Execution interrupted by user (SIGINT).")
         sys.exit(130)
     except PipelineExecutionError as exc:
-        logging.error(f"Execution halted due to pipeline failure: {exc}")
+        logging.critical(f"Execution halted due to pipeline failure: {exc}")
         sys.exit(1)
     except Exception as exc:
         logging.critical(f"Unhandled fatal error: {exc}", exc_info=True)

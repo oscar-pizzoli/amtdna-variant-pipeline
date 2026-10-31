@@ -1888,7 +1888,7 @@ class EndToEndPipelineRunner:
                     unrescaled_bams_for_block5.append((s_id, final_bam, is_ancient))
                     logger.info(f"[{s_id}] Block 4 Verdict: {verdict} (Classified: {sample_types[s_id]})")
                 except Exception as err:
-                    logger.error(f"[{s_id}] Block 4 failure: {err}", exc_info=True)
+                    logger.critical(f"[{s_id}] Block 4 failure: {err}", exc_info=True)
                     failed_samples[s_id] = f"Block 4: {err}"
         else:
             samples = self.run_discovery_and_preprocessing(input_dir)
@@ -1921,7 +1921,7 @@ class EndToEndPipelineRunner:
 
                     logger.info(f"[{s_id}] Block 4 Verdict: {verdict} (Classified: {sample_types[s_id]})")
                 except Exception as err:
-                    logger.error(f"[{s_id}] Blocks 3/4 failure: {err}", exc_info=True)
+                    logger.critical(f"[{s_id}] Blocks 3/4 failure: {err}", exc_info=True)
                     failed_samples[s_id] = f"Blocks 3/4: {err}"
 
         active_sample_ids = [sid for sid in cohort_sample_ids if sid not in failed_samples]
@@ -1960,7 +1960,7 @@ class EndToEndPipelineRunner:
                     f"Het Sites (PASS/Total): {qc_res.heteroplasmy_sites_pass}/{qc_res.heteroplasmy_sites_total}"
                 )
             except Exception as err:
-                logger.error(f"[{s_id}] Block 6 failed: {err}", exc_info=True)
+                logger.critical(f"[{s_id}] Block 6 failed: {err}", exc_info=True)
                 failed_samples[s_id] = f"Block 6: {err}"
 
         tsv_cons, json_cons = self.export_consensus_cohort_summary(cohort_qc, consensus_dir)
@@ -1995,7 +1995,7 @@ class EndToEndPipelineRunner:
                     f"Validation={b7_contract.overall_validation_status.value}"
                 )
             except Exception as err:
-                logger.error(f"[{s_id}] Block 7 failed: {err}", exc_info=True)
+                logger.critical(f"[{s_id}] Block 7 failed: {err}", exc_info=True)
                 failed_samples[s_id] = f"Block 7: {err}"
 
         tsv_hg, json_hg = self.export_haplogroup_cohort_summary(cohort_b7_contracts, haplogroup_dir)
@@ -2018,7 +2018,7 @@ class EndToEndPipelineRunner:
                     f"Artifacts: {len(artifacts)}"
                 )
             except Exception as err:
-                logger.error(f"[{s_id}] Block 8 Sample Synthesis failed: {err}", exc_info=True)
+                logger.critical(f"[{s_id}] Block 8 Sample Synthesis failed: {err}", exc_info=True)
                 failed_samples[s_id] = f"Block 8: {err}"
 
         cohort_deliverables = self.synthesis_orchestrator.run_cohort(cohort_sample_ids)

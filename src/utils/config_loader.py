@@ -77,7 +77,7 @@ class PipelineConfig:
         # 1. Parsing Sezione Input & Discovery
         inp_sec = raw.get("input", {})
         data_type = str(inp_sec.get("data_type", "FASTQ")).upper()
-        input_dir = Path(inp_sec.get("input_dir", "data/raw_fastq"))
+        input_dir = Path(inp_sec.get("input_dir") or "data/raw_fastq")
         pattern_r1 = str(inp_sec.get("pattern_r1", "*_R1*.fastq.gz"))
         pattern_r2 = str(inp_sec.get("pattern_r2", "*_R2*.fastq.gz"))
         single_end = bool(inp_sec.get("single_end", False))

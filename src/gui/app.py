@@ -309,7 +309,7 @@ cache_policy_choice = st.sidebar.selectbox(
 
 log_level = st.sidebar.selectbox(
     "Terminal Log Verbosity",
-    ["INFO", "DEBUG", "WARNING", "ERROR"],
+    ["INFO", "DEBUG", "WARNING", "ERROR", "CRITICAL"],
     index=0,
     disabled=is_running,
 )

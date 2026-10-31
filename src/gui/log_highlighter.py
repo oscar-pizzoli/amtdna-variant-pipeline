@@ -99,7 +99,8 @@ class LogHighlighter:
             if line.startswith("    "):
                 return f'<span class="ln-traceback">{escaped_line}</span>', True
 
-        is_error = any(tag in line for tag in ("[ERROR]", "[CRITICAL]"))
+        is_critical = any(tag in line for tag in ("[CRITICAL]", "CRITICAL:"))
+        is_error = any(tag in line for tag in ("[ERROR]", "ERROR:"))
 
         def _replace_token(match: re.Match) -> str:
             group_dict = match.groupdict()
@@ -123,6 +124,8 @@ class LogHighlighter:
             return match.group(0)
 
         tokenized = TOKEN_RE.sub(_replace_token, escaped_line)
+        if is_critical:
+            return f'<span class="ln-critical">{tokenized}</span>', False
         if is_error:
             return f'<span class="ln-error">{tokenized}</span>', False
 
@@ -169,13 +172,31 @@ class LogHighlighter:
         .hud-terminal .tk-lvl.tk-info {{ color: #38BDF8 !important; font-weight: bold !important; }}
         .hud-terminal .tk-lvl.tk-debug {{ color: #64748B !important; font-weight: bold !important; }}
         .hud-terminal .tk-lvl.tk-warning {{ color: #FBBF24 !important; font-weight: bold !important; }}
-        .hud-terminal .tk-lvl.tk-error,
-        .hud-terminal .tk-lvl.tk-critical {{ color: #F87171 !important; font-weight: bold !important; }}
+        .hud-terminal .tk-lvl.tk-error {{ color: #F87171 !important; font-weight: bold !important; }}
+        .hud-terminal .tk-lvl.tk-critical {{
+            color: #FFFFFF !important;
+            background-color: #DC2626 !important;
+            font-weight: 800 !important;
+            border-radius: 3px;
+            padding: 1px 5px;
+            display: inline-block;
+            box-shadow: 0 0 6px rgba(220, 38, 38, 0.6);
+        }}
         .hud-terminal .tk-sample {{ color: #F472B6 !important; font-weight: bold !important; }}
         .hud-terminal .tk-block {{ color: #34D399 !important; font-weight: bold !important; }}
         .hud-terminal .tk-stage {{ color: #2DD4BF !important; font-weight: bold !important; }}
         .hud-terminal .tk-metric {{ color: #FDE047 !important; font-weight: bold !important; }}
         .hud-terminal .ln-error {{ background: rgba(239, 68, 68, 0.22); color: #FCA5A5 !important; display: block; border-radius: 2px; padding: 0 2px; }}
+        .hud-terminal .ln-critical {{
+            background: rgba(220, 38, 38, 0.28) !important;
+            color: #FEE2E2 !important;
+            border-left: 4px solid #EF4444 !important;
+            display: block;
+            border-radius: 2px;
+            padding: 2px 6px;
+            margin: 2px 0;
+            font-weight: 600;
+        }}
         .hud-terminal .ln-traceback {{ color: #F87171 !important; font-style: italic; display: block; }}
         </style>
         <div class="hud-terminal-container">
