@@ -2,12 +2,12 @@
 # BIOLOGICAL DATA & LARGE FILES (Do NOT commit to GitHub)
 # ==============================================================================
 # Raw FASTQ data
-data/raw_fastq/
+
 *.fastq
 *.fastq.gz
 *.fq
 *.fq.gz
-data/
+
 
 # Alignments and genomic index files
 *.bam
