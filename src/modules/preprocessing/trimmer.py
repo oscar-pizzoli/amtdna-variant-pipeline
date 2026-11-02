@@ -22,6 +22,7 @@ from src.modules.preprocessing.models import (
 )
 from src.modules.preprocessing.integrity import IntegrityEngine, IntegrityError
 from src.modules.preprocessing.fastq_validator import FastqValidator, FastqValidationError
+from src.utils.progress_bar import run_tracked_subprocess
 
 logger = logging.getLogger("mtDNA_Pipeline.Trimmer")
 
@@ -676,7 +677,29 @@ class PreprocessingEngine:
         run_started_ts = time.time()
         try:
             with open(stdout_log, "w", encoding="utf-8") as out_f, open(stderr_log, "w", encoding="utf-8") as err_f:
-                res = subprocess.run(cmd, stdout=out_f, stderr=err_f, check=False, timeout=timeout)
+                target_b = None
+                if is_paired and r1_path and r1_path.is_file():
+                    target_b = int(r1_path.stat().st_size * 1.5)
+                elif r1_path and r1_path.is_file():
+                    target_b = int(r1_path.stat().st_size * 0.8)
+
+                res = run_tracked_subprocess(
+                    cmd=cmd,
+                    stdout_f=out_f,
+                    stderr_f=err_f,
+                    label=f"[{sample.sample_id}] [Trimming Ends]",
+                    timeout=timeout,
+                    expected_duration=35.0,
+                    check_output_files=[
+                        out_prefix.with_suffix(".collapsed.gz"),
+                        out_prefix.with_suffix(".merged.fastq.gz"),
+                        out_prefix.with_suffix(".pair1.truncated.gz"),
+                        out_prefix.with_suffix(".r1.fastq.gz"),
+                        out_prefix.with_suffix(".truncated.gz"),
+                        out_prefix.with_suffix(".singleton.fastq.gz"),
+                    ],
+                    target_bytes=target_b,
+                )
         except subprocess.TimeoutExpired as t_exc:
             sample.validation.add_error(f"AdapterRemoval timed out after {timeout} seconds.")
             sample.validation.status = ValidationStatus.FAIL

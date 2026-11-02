@@ -30,6 +30,7 @@ from src.modules.contamination.models import (
     SchmutziPolicy,
     WrappingMetadata,
 )
+from src.utils.progress_bar import run_tracked_subprocess
 
 logger = logging.getLogger("mtDNA_Pipeline.SchmutziEngine")
 
@@ -561,14 +562,15 @@ class SchmutziEngine:
             executed_commands.append(" ".join(exec_cmd_deam))
 
             try:
-                with open(stdout_log, "w", encoding="utf-8") as out_f, open(stderr_log, "w", encoding="utf-8") as err_f:
-                    res_deam = subprocess.run(
-                        exec_cmd_deam,
-                        stdout=out_f,
-                        stderr=err_f,
-                        check=False,
-                        timeout=timeout_seconds,
-                    )
+                res_deam = run_tracked_subprocess(
+                    cmd=exec_cmd_deam,
+                    desc=f"Schmutzi: contDeam [{sample_id}]",
+                    stdout_file=stdout_log,
+                    stderr_file=stderr_log,
+                    expected_duration_sec=30.0,
+                    check=False,
+                    timeout=timeout_seconds,
+                )
             except subprocess.TimeoutExpired as t_exc:
                 raise SchmutziExecutionError(f"contDeam timed out after {timeout_seconds}s.") from t_exc
             except OSError as exc:
@@ -628,16 +630,18 @@ class SchmutziEngine:
         logger.info(f"[{sample_id}] Invocation: {' '.join(exec_cmd_schmutzi)}")
         executed_commands.append(" ".join(exec_cmd_schmutzi))
 
-        open_mode = "a" if active_use_deam else "w"
         try:
-            with open(stdout_log, open_mode, encoding="utf-8") as out_f, open(stderr_log, open_mode, encoding="utf-8") as err_f:
-                res_schmutzi = subprocess.run(
-                    exec_cmd_schmutzi,
-                    stdout=out_f,
-                    stderr=err_f,
-                    check=False,
-                    timeout=timeout_seconds,
-                )
+            res_schmutzi = run_tracked_subprocess(
+                cmd=exec_cmd_schmutzi,
+                desc=f"Schmutzi: MCMC [{sample_id}]",
+                stdout_file=stdout_log,
+                stderr_file=stderr_log,
+                append_logs=active_use_deam,
+                log_file_to_tail=stdout_log,
+                expected_duration_sec=240.0,
+                check=False,
+                timeout=timeout_seconds,
+            )
         except subprocess.TimeoutExpired as t_exc:
             raise SchmutziExecutionError(f"schmutzi.pl timed out after {timeout_seconds}s.") from t_exc
         except OSError as exc:

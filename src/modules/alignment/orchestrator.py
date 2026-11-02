@@ -53,6 +53,7 @@ from src.modules.alignment.metrics_collector import (
     MetricsCollectionResult,
 )
 from src.modules.preprocessing.models import SampleRecord
+from src.utils.progress_bar import SubstageTracker
 
 logger = logging.getLogger("mtDNA_Pipeline.AlignmentOrchestrator")
 
@@ -233,6 +234,18 @@ class AlignmentOrchestrator:
         logger.info(f"[{sample_id}] Starting Block 3: Alignment, Filtering, and QC Pipeline")
         logger.info(f"[{sample_id}] ========================================================")
 
+        aln_tracker = SubstageTracker(
+            label=f"[{sample_id}] [Alignment & Dedup]",
+            stages=[
+                ("Multi-Branch BWA Alignment", 0.35),
+                ("BAM Preparation & Sorting", 0.25),
+                ("PCR Deduplication", 0.15),
+                ("MAPQ & Flag Filtering", 0.15),
+                ("QC Metrics & Depth Profiling", 0.10),
+            ],
+            width=25,
+        )
+
         try:
             # Step 1: Reference Genome Precondition Check
             if not reference_info.has_bwa_index or not reference_info.has_fai_index:
@@ -242,6 +255,7 @@ class AlignmentOrchestrator:
 
             # Step 2: Multi-Branch BWA Alignment
             logger.info(f"[{sample_id}] [Stage 1/5] Running multi-branch BWA alignment...")
+            aln_tracker.start_stage("Multi-Branch BWA Alignment")
             branch_results: AlignmentBranchResults = BWAAligner.align_sample_branches(
                 sample=sample,
                 reference_info=reference_info,
@@ -266,6 +280,7 @@ class AlignmentOrchestrator:
 
             # Step 3: Structural BAM Preparation
             logger.info(f"[{sample_id}] [Stage 2/5] Merging branches and streaming collate -> fixmate -m -> sort...")
+            aln_tracker.start_stage("BAM Preparation & Sorting")
             prep_result: PipelinePreparationResult = SamtoolsPipeline.process_sample_branches(
                 branch_results=branch_results,
                 output_dir=sample_out_dir,
@@ -284,6 +299,7 @@ class AlignmentOrchestrator:
 
             # Step 4: PCR Deduplication
             logger.info(f"[{sample_id}] [Stage 3/5] Executing PCR duplicate marking and deduplication...")
+            aln_tracker.start_stage("PCR Deduplication")
             dedup_result: DedupExecutionResult = DedupEngine.execute_dedup(
                 sample_id=sample_id,
                 input_sorted_bam=prep_result.sorted_bam,
@@ -303,6 +319,7 @@ class AlignmentOrchestrator:
 
             # Step 5: Quality & Multi-Mapping Filtering
             logger.info(f"[{sample_id}] [Stage 4/5] Applying quality, flag, and multi-mapping filters...")
+            aln_tracker.start_stage("MAPQ & Flag Filtering")
             filter_result: FilterExecutionResult = AlignmentFilterEngine.execute_filtering(
                 sample_id=sample_id,
                 input_markdup_bam=dedup_result.markdup_bam,
@@ -324,6 +341,7 @@ class AlignmentOrchestrator:
 
             # Step 6: Quality Metrics Collection & Whole-Genome Depth Profiling
             logger.info(f"[{sample_id}] [Stage 5/5] Collecting flagstats, depth distribution, and coverage metrics...")
+            aln_tracker.start_stage("QC Metrics & Depth Profiling")
             metrics_result: MetricsCollectionResult = MetricsCollector.collect_all_metrics(
                 sample_id=sample_id,
                 reference_info=reference_info,
@@ -375,11 +393,13 @@ class AlignmentOrchestrator:
             if result.status == AlignmentStatus.UNTESTED:
                 result.status = AlignmentStatus.PASS
 
+            aln_tracker.finish("Alignment Complete ✓")
             logger.info(
                 f"[{sample_id}] Block 3 alignment completed successfully with status: {result.status.value}"
             )
 
         except Exception as exc:
+            aln_tracker.fail(f"Failed: {exc}")
             err_msg = f"Alignment orchestration failed for sample {sample_id}: {exc}"
             logger.error(err_msg)
             logger.debug(traceback.format_exc())

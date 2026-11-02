@@ -20,6 +20,7 @@ from src.modules.alignment.models import (
 )
 from src.modules.preprocessing.models import ProcessedReads, SampleRecord, ValidationStatus
 from src.modules.preprocessing.integrity import IntegrityEngine
+from src.utils.progress_bar import run_tracked_subprocess
 
 logger = logging.getLogger("mtDNA_Pipeline.BWAAligner")
 
@@ -205,7 +206,16 @@ class BWAAligner:
 
         try:
             with open(output_sai, "wb") as out_f, open(log_err, "w", encoding="utf-8") as err_f:
-                res = subprocess.run(cmd, stdout=out_f, stderr=err_f, check=False)
+                target_b = max(1024, int(fastq_path.stat().st_size * 0.15)) if fastq_path.is_file() else None
+                res = run_tracked_subprocess(
+                    cmd=cmd,
+                    stdout_f=out_f,
+                    stderr_f=err_f,
+                    label=f"[{fastq_path.stem}] [BWA aln]",
+                    expected_duration=25.0,
+                    check_output_files=[output_sai],
+                    target_bytes=target_b,
+                )
         except OSError as exc:
             raise BWAAlignerError(f"Failed to launch 'bwa aln' for {fastq_path.name}: {exc}") from exc
 

@@ -343,18 +343,30 @@ def render_live_log(was_active_at_mount: bool, active_theme: dict) -> None:
         else:
             st.toast(f"⚠️ Pipeline finished with exit code {last_c}", icon="🔴")
 
+    lines = LogHighlighter.tail_lines_binary(RUN_LOG_FILE, n_lines=60)
+
+    progress_box = st.empty()
+
     if running:
         st.info("⚡ Pipeline is actively running in background. You can safely browse tabs.")
+        prog_val, prog_lbl = LogHighlighter.extract_current_progress(lines)
+        if prog_lbl:
+            progress_box.progress(prog_val, text=prog_lbl)
+        else:
+            progress_box.empty()
     else:
         last_code = ProcessManager.get_last_exit_code()
         if last_code is not None:
             if last_code == 0:
                 st.success("Last execution completed successfully (Exit Code: 0).")
+                progress_box.progress(1.0, text="Pipeline execution complete (100%)")
             else:
                 st.error(f"Last execution ended with errors (Exit Code: {last_code}).")
+                progress_box.empty()
+        else:
+            progress_box.empty()
 
     st.markdown("### Execution Log Stream")
-    lines = LogHighlighter.tail_lines_binary(RUN_LOG_FILE, n_lines=60)
     if lines:
         st.html(LogHighlighter.render_terminal_html(lines, theme=active_theme))
     else:

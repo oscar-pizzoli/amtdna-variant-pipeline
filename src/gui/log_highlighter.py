@@ -27,6 +27,21 @@ TRACEBACK_START_RE = re.compile(r"^Traceback \(most recent call last\):")
 TRACEBACK_FILE_RE = re.compile(r'^\s*File ".*?", line \d+, in .*')
 EXCEPTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Warning):\s*.*")
 
+PROGRESS_RE = re.compile(r"(?P<prefix>.*?)\s*\[[━= -]{5,}\]\s*(?P<pct>\d{1,3})%(?:\s*\|\s*(?P<detail>.*))?")
+BLOCK_RE = re.compile(r"▶\s*(BLOCKS?\s*[\d\s&]+):\s*([^(\n]+)")
+
+BLOCK_PROGRESS_MAP = {
+    "BLOCK 1": (0.12, "Block 1/8: Reference Genome Validation"),
+    "BLOCK 2": (0.25, "Block 2/8: Discovery & Preprocessing"),
+    "BLOCKS 3 & 4": (0.50, "Blocks 3 & 4: Alignment & Damage Profiling"),
+    "BLOCK 3": (0.40, "Block 3/8: Alignment & Filtering"),
+    "BLOCK 4": (0.50, "Block 4/8: aDNA Damage Profiling"),
+    "BLOCK 5": (0.75, "Block 5/8: Contamination Estimation & Gating"),
+    "BLOCK 6": (0.88, "Block 6/8: Consensus Assembly & Heteroplasmy"),
+    "BLOCK 7": (0.94, "Block 7/8: Haplogrouping & Phylogeny"),
+    "BLOCK 8": (0.98, "Block 8/8: Forensic Synthesis & Reporting"),
+}
+
 
 class LogHighlighter:
     """Parses and formats raw terminal execution logs into safe, styled HTML."""
@@ -37,7 +52,7 @@ class LogHighlighter:
 
     @staticmethod
     def normalize_carriage_returns(text: str) -> List[str]:
-        """Resolves progress bar \r overwrites, isolating the final line state."""
+        """Resolves progress bar \r overwrites and collapses repeated progress updates into a single in-place line."""
         resolved_lines = []
         for raw_line in text.split("\n"):
             cleaned = LogHighlighter.strip_ansi(raw_line)
@@ -47,7 +62,21 @@ class LogHighlighter:
                     resolved_lines.append(segments[-1])
             else:
                 resolved_lines.append(cleaned)
-        return resolved_lines
+
+        # Collapse repeated progress lines for the same operation into a single live message
+        deduped: List[str] = []
+        for line in resolved_lines:
+            m = PROGRESS_RE.search(line)
+            if m:
+                prefix = m.group("prefix").strip()
+                if deduped and PROGRESS_RE.search(deduped[-1]):
+                    prev_m = PROGRESS_RE.search(deduped[-1])
+                    if prev_m and prev_m.group("prefix").strip() == prefix:
+                        deduped[-1] = line
+                        continue
+            deduped.append(line)
+
+        return deduped
 
     @classmethod
     def tail_lines_binary(cls, filepath: Path, n_lines: int = 60, chunk_size: int = 4096) -> List[str]:
@@ -79,6 +108,46 @@ class LogHighlighter:
                 return normalized[-n_lines:]
         except OSError:
             return []
+
+    @classmethod
+    def extract_current_progress(cls, lines: List[str]) -> Tuple[float, str]:
+        """
+        Parses tail log lines to extract numerical progress and a concise status label.
+        Recognizes live substage progress bars (AdapterRemoval, BWA, Schmutzi)
+        as well as high-level block executions.
+        """
+        if not lines:
+            return 0.0, ""
+
+        # 1. Search recent lines for active sub-stage progress bars
+        for line in reversed(lines[-25:]):
+            m = PROGRESS_RE.search(line)
+            if m:
+                pct = max(0.0, min(1.0, int(m.group("pct")) / 100.0))
+                prefix = m.group("prefix").strip()
+                detail = (m.group("detail") or "").strip()
+                label = f"{prefix}: {int(pct * 100)}%"
+                if detail:
+                    label += f" | {detail}"
+                return pct, label
+
+        # 2. Check for completion or cohort aggregation
+        for line in reversed(lines):
+            if "COMPLETE PIPELINE" in line or "JOB COMPLETED" in line:
+                return 1.0, "Complete Pipeline Finished (100%)"
+            if "Cohort Aggregation" in line:
+                return 0.99, "Cohort Aggregation & Deliverables (99%)"
+
+        # 3. Check for Block transitions
+        for line in reversed(lines):
+            m = BLOCK_RE.search(line)
+            if m:
+                raw_blk = m.group(1).strip()
+                for k, (val, name) in BLOCK_PROGRESS_MAP.items():
+                    if k in raw_blk:
+                        return val, f"{name} ({int(val * 100)}%)"
+
+        return 0.05, "Pipeline running..."
 
     @classmethod
     def format_line(cls, line: str, in_traceback: bool = False) -> Tuple[str, bool]:
