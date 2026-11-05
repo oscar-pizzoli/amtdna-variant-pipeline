@@ -6,7 +6,6 @@ for long-running analytical stages (Adapter trimming, BWA alignment, Schmutzi MC
 Designed as an independent, modular utility to avoid cluttering core pipeline runners.
 """
 
-from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
