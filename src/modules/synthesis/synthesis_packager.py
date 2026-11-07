@@ -442,6 +442,12 @@ class SynthesisPackager:
         out_path = sample_muts_dir / f"{record.sample_id}.mutation_catalog.tsv"
         rows: List[List[str]] = [m.to_tsv_row() for m in record.mutations]
         self._atomic_write_tsv(out_path, MUTATION_TSV_HEADERS, rows)
+
+        # Single samples compatibility
+        single_samples_dir = self.dir_muts / "single_samples"
+        single_samples_dir.mkdir(parents=True, exist_ok=True)
+        compat_path = single_samples_dir / f"{record.sample_id}.mutation_catalog.tsv"
+        self._atomic_write_tsv(compat_path, MUTATION_TSV_HEADERS, rows)
         return out_path
 
     def export_mutation_list_tsv(self, record: SampleMasterRecord) -> Path:

@@ -1,0 +1,241 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 720" width="100%" height="100%">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19"/>
+      <stop offset="50%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+
+    <linearGradient id="blueCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+
+    <linearGradient id="glowB1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="glowB2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#2dd4bf"/>
+      <stop offset="100%" stop-color="#0d9488"/>
+    </linearGradient>
+    <linearGradient id="glowB3" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#60a5fa"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="glowB4" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+    <linearGradient id="glowB5" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f87171"/>
+      <stop offset="100%" stop-color="#dc2626"/>
+    </linearGradient>
+    <linearGradient id="glowB6" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="glowB7" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#9333ea"/>
+    </linearGradient>
+    <linearGradient id="glowB8" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f43f5e"/>
+      <stop offset="100%" stop-color="#e11d48"/>
+    </linearGradient>
+
+    <!-- Arrow Marker -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowActive" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#38bdf8"/>
+    </marker>
+
+    <!-- Card Shadow -->
+    <filter id="cardShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <style>
+    .title { font-family: system-ui, -apple-system, sans-serif; font-size: 20px; font-weight: 700; fill: #f8fafc; }
+    .subtitle { font-family: system-ui, -apple-system, sans-serif; font-size: 12px; fill: #94a3b8; }
+    .card-title { font-family: system-ui, -apple-system, sans-serif; font-size: 13px; font-weight: 700; fill: #f1f5f9; }
+    .card-sub { font-family: system-ui, -apple-system, sans-serif; font-size: 11px; fill: #94a3b8; }
+    .tag { font-family: system-ui, -apple-system, sans-serif; font-size: 10px; font-weight: 600; }
+    .link-line { stroke: #334155; stroke-width: 2; fill: none; }
+    .active-line { stroke: #38bdf8; stroke-width: 2; stroke-dasharray: 4,4; fill: none; }
+    .bypass-line { stroke: #a855f7; stroke-width: 2; stroke-dasharray: 5,4; fill: none; }
+  </style>
+
+  <!-- Background Canvas -->
+  <rect width="1000" height="720" rx="16" fill="url(#bgGrad)" stroke="#1e293b" stroke-width="2"/>
+
+  <!-- Pipeline Top Header -->
+  <g transform="translate(40, 24)">
+    <text x="0" y="24" class="title">🧬 Ancient &amp; Modern mtDNA Variant Pipeline</text>
+    <text x="0" y="44" class="subtitle">Forensic-Grade 8-Block Modular Architecture &amp; Cryptographic JSON Contract Chain</text>
+    
+    <!-- User Interfaces Badge -->
+    <rect x="660" y="6" width="260" height="42" rx="8" fill="#1e293b" stroke="#334155"/>
+    <text x="675" y="24" class="card-title">Dual Interface Layer</text>
+    <text x="675" y="38" class="card-sub">Streamlit Web HUD &amp; Terminal CLI</text>
+  </g>
+
+  <!-- Connective Pipeline Wires -->
+  <path d="M 190 145 L 230 145" class="link-line" marker-end="url(#arrow)"/>
+  <path d="M 440 145 L 480 145" class="link-line" marker-end="url(#arrow)"/>
+  <path d="M 690 145 L 730 145" class="link-line" marker-end="url(#arrow)"/>
+
+  <!-- Vertical connector from Row 1 to Row 2 -->
+  <path d="M 835 195 L 835 240 L 135 240 L 135 285" class="link-line" marker-end="url(#arrow)"/>
+
+  <path d="M 240 335 L 280 335" class="link-line" marker-end="url(#arrow)"/>
+  <path d="M 490 335 L 530 335" class="link-line" marker-end="url(#arrow)"/>
+  <path d="M 740 335 L 780 335" class="link-line" marker-end="url(#arrow)"/>
+
+  <!-- Direct BAM Mode Bypass line -->
+  <path d="M 135 195 C 135 235 635 235 635 285" class="bypass-line" marker-end="url(#arrow)"/>
+
+  <!-- ROW 1 BLOCKS -->
+
+  <!-- Input Sources -->
+  <g transform="translate(40, 100)" filter="url(#cardShadow)">
+    <rect width="150" height="95" rx="10" fill="url(#blueCard)" stroke="#38bdf8" stroke-width="1.5"/>
+    <rect x="0" y="0" width="150" height="4" rx="2" fill="url(#glowB1)"/>
+    <text x="14" y="25" class="card-title">Sequence Inputs</text>
+    <text x="14" y="44" class="card-sub">• FASTQ (SE / PE)</text>
+    <text x="14" y="60" class="card-sub">• BAM (Direct Mode)</text>
+    <rect x="14" y="70" width="105" height="16" rx="4" fill="#0369a1"/>
+    <text x="20" y="82" class="tag" fill="#e0f2fe">Auto-Encoding Detect</text>
+  </g>
+
+  <!-- Block 1: Reference Genome Validation -->
+  <g transform="translate(230, 100)" filter="url(#cardShadow)">
+    <rect width="210" height="95" rx="10" fill="url(#blueCard)" stroke="#334155" stroke-width="1.5"/>
+    <rect x="0" y="0" width="210" height="4" rx="2" fill="url(#glowB1)"/>
+    <text x="14" y="24" class="card-title">Block 1: Reference</text>
+    <text x="14" y="42" class="card-sub">Revised Cambridge (rCRS)</text>
+    <text x="14" y="58" class="card-sub">NC_012920.1 (16,569 bp)</text>
+    <rect x="14" y="70" width="130" height="16" rx="4" fill="#0284c7"/>
+    <text x="20" y="82" class="tag" fill="#f0f9ff">BWA + FAI Auto-Index</text>
+  </g>
+
+  <!-- Block 2: Preprocessing -->
+  <g transform="translate(480, 100)" filter="url(#cardShadow)">
+    <rect width="210" height="95" rx="10" fill="url(#blueCard)" stroke="#334155" stroke-width="1.5"/>
+    <rect x="0" y="0" width="210" height="4" rx="2" fill="url(#glowB2)"/>
+    <text x="14" y="24" class="card-title">Block 2: Preprocessing</text>
+    <text x="14" y="42" class="card-sub">AdapterRemoval v2.3.3</text>
+    <text x="14" y="58" class="card-sub">N-Trimming &amp; PE Overlap Merge</text>
+    <rect x="14" y="70" width="135" height="16" rx="4" fill="#0f766e"/>
+    <text x="20" y="82" class="tag" fill="#ccfbf1">block2_contract.json</text>
+  </g>
+
+  <!-- Block 3: Alignment & Dedup -->
+  <g transform="translate(730, 100)" filter="url(#cardShadow)">
+    <rect width="210" height="95" rx="10" fill="url(#blueCard)" stroke="#334155" stroke-width="1.5"/>
+    <rect x="0" y="0" width="210" height="4" rx="2" fill="url(#glowB3)"/>
+    <text x="14" y="24" class="card-title">Block 3: Alignment</text>
+    <text x="14" y="42" class="card-sub">BWA-aln (-l 1000 -n 0.01)</text>
+    <text x="14" y="58" class="card-sub">2-Coord Dedup (samtools)</text>
+    <rect x="14" y="70" width="135" height="16" rx="4" fill="#1d4ed8"/>
+    <text x="20" y="82" class="tag" fill="#dbeafe">block3_contract.json</text>
+  </g>
+
+  <!-- ROW 2 BLOCKS -->
+
+  <!-- Block 4: Damage Quantification -->
+  <g transform="translate(30, 285)" filter="url(#cardShadow)">
+    <rect width="210" height="100" rx="10" fill="url(#blueCard)" stroke="#334155" stroke-width="1.5"/>
+    <rect x="0" y="0" width="210" height="4" rx="2" fill="url(#glowB4)"/>
+    <text x="14" y="24" class="card-title">Block 4: aDNA Damage</text>
+    <text x="14" y="42" class="card-sub">mapDamage2 + PMDtools</text>
+    <text x="14" y="58" class="card-sub">Bayesian BQ Rescaling</text>
+    <rect x="14" y="72" width="150" height="16" rx="4" fill="#b45309"/>
+    <text x="20" y="84" class="tag" fill="#fef3c7">AUTHENTIC_ANCIENT</text>
+  </g>
+
+  <!-- Block 5: Contamination Gating -->
+  <g transform="translate(280, 285)" filter="url(#cardShadow)">
+    <rect width="210" height="100" rx="10" fill="url(#blueCard)" stroke="#334155" stroke-width="1.5"/>
+    <rect x="0" y="0" width="210" height="4" rx="2" fill="url(#glowB5)"/>
+    <text x="14" y="24" class="card-title">Block 5: Contamination</text>
+    <text x="14" y="42" class="card-sub">Tier 1: FastScreen (354 sites)</text>
+    <text x="14" y="58" class="card-sub">Tier 2: Schmutzi MCMC 197-DB</text>
+    <rect x="14" y="72" width="145" height="16" rx="4" fill="#b91c1c"/>
+    <text x="20" y="84" class="tag" fill="#fee2e2">Biological Gating Rules</text>
+  </g>
+
+  <!-- Block 6: Consensus & Heteroplasmy -->
+  <g transform="translate(530, 285)" filter="url(#cardShadow)">
+    <rect width="210" height="100" rx="10" fill="url(#blueCard)" stroke="#334155" stroke-width="1.5"/>
+    <rect x="0" y="0" width="210" height="4" rx="2" fill="url(#glowB6)"/>
+    <text x="14" y="24" class="card-title">Block 6: Consensus</text>
+    <text x="14" y="42" class="card-sub">Canonical 1:1 + IUPAC FASTA</text>
+    <text x="14" y="58" class="card-sub">Fisher Strand-Bias &amp; Spatial QC</text>
+    <rect x="14" y="72" width="135" height="16" rx="4" fill="#047857"/>
+    <text x="20" y="84" class="tag" fill="#d1fae5">variants.vcf.gz</text>
+  </g>
+
+  <!-- Block 7: Haplogrouping -->
+  <g transform="translate(780, 285)" filter="url(#cardShadow)">
+    <rect width="190" height="100" rx="10" fill="url(#blueCard)" stroke="#334155" stroke-width="1.5"/>
+    <rect x="0" y="0" width="190" height="4" rx="2" fill="url(#glowB7)"/>
+    <text x="14" y="24" class="card-title">Block 7: Lineage</text>
+    <text x="14" y="42" class="card-sub">HaploGrep 3 (Phylotree 17)</text>
+    <text x="14" y="58" class="card-sub">Dual-Stream VCF/FASTA</text>
+    <rect x="14" y="72" width="145" height="16" rx="4" fill="#7e22ce"/>
+    <text x="20" y="84" class="tag" fill="#f3e8ff">Contaminant Audit</text>
+  </g>
+
+  <!-- ROW 3: FORENSIC SYNTHESIS & AUDIT (BLOCK 8) -->
+  <g transform="translate(30, 435)" filter="url(#cardShadow)">
+    <rect width="940" height="145" rx="12" fill="#0f172a" stroke="#e11d48" stroke-width="1.5"/>
+    <rect x="0" y="0" width="940" height="4" rx="2" fill="url(#glowB8)"/>
+    
+    <text x="20" y="28" class="card-title" font-size="15px">Block 8: Forensic Synthesis &amp; Cryptographic Provenance Audit</text>
+    <text x="20" y="46" class="card-sub">Orchestrates multi-contract validation, forensic chain-of-custody, and multi-tier report packaging.</text>
+
+    <!-- 4 Deliverable Pillars -->
+    <g transform="translate(20, 60)">
+      <!-- Pillar 1 -->
+      <rect width="210" height="65" rx="6" fill="#1e293b" stroke="#334155"/>
+      <text x="12" y="20" class="card-title" font-size="12px">🔐 4-Tier Provenance</text>
+      <text x="12" y="36" class="card-sub">Cryptographic SHA-256 Check</text>
+      <text x="12" y="50" class="card-sub">execution_manifest.json</text>
+
+      <!-- Pillar 2 -->
+      <rect x="230" width="210" height="65" rx="6" fill="#1e293b" stroke="#334155"/>
+      <text x="242" y="20" class="card-title" font-size="12px">📄 Case Reports</text>
+      <text x="242" y="36" class="card-sub">Self-Contained Markdown</text>
+      <text x="242" y="50" class="card-sub">&lt;SAMPLE_ID&gt;.report.md</text>
+
+      <!-- Pillar 3 -->
+      <rect x="460" width="210" height="65" rx="6" fill="#1e293b" stroke="#334155"/>
+      <text x="472" y="20" class="card-title" font-size="12px">🧬 Multi-FASTA Deliverables</text>
+      <text x="472" y="36" class="card-sub">cohort_canonical.fasta</text>
+      <text x="472" y="50" class="card-sub">cohort_iupac.fasta</text>
+
+      <!-- Pillar 4 -->
+      <rect x="690" width="210" height="65" rx="6" fill="#1e293b" stroke="#334155"/>
+      <text x="702" y="20" class="card-title" font-size="12px">📊 Cohort Variant Matrices</text>
+      <text x="702" y="36" class="card-sub">cohort_mutation_catalog.tsv</text>
+      <text x="702" y="50" class="card-sub">cohort_qc_summary.tsv</text>
+    </g>
+  </g>
+
+  <!-- Bottom Execution Bar -->
+  <g transform="translate(30, 605)">
+    <rect width="940" height="75" rx="10" fill="#1e293b" stroke="#475569"/>
+    <text x="20" y="26" class="card-title">⚡ Quick Execution Commands (Conda: adna_qc)</text>
+    
+    <rect x="20" y="36" width="435" height="26" rx="4" fill="#0f172a" stroke="#334155"/>
+    <text x="30" y="53" font-family="monospace" font-size="11px" fill="#38bdf8">bash setup.sh  # Automated 1-step installer</text>
+
+    <rect x="475" y="36" width="445" height="26" rx="4" fill="#0f172a" stroke="#334155"/>
+    <text x="485" y="53" font-family="monospace" font-size="11px" fill="#34d399">python scripts/run_complete_pipeline.py --data-type FASTQ</text>
+  </g>
+</svg>

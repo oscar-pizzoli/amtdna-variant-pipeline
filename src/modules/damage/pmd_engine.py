@@ -186,6 +186,7 @@ class PMDScoringEngine:
         scores: List[float] = []
         total_lines = 0
         unparsed_lines = 0
+        score_col_idx: Optional[int] = None
 
         try:
             with open(scores_tsv, "r", encoding="utf-8") as f:
@@ -196,13 +197,23 @@ class PMDScoringEngine:
 
                     total_lines += 1
                     parts = line_str.split()
+                    if not parts:
+                        continue
 
-                    # The PMD score (log-likelihood ratio) is located in the final column across pmdtools output formats:
-                    # - With --printDS (4 columns): [p_damage, p_null, likelihood_ratio, pmd_score] -> parts[-1]
-                    # - With --print (2 columns): [read_id, pmd_score] -> parts[-1]
-                    # - Single-column numeric stream: [pmd_score] -> parts[-1]
+                    # Header detection
+                    if score_col_idx is None and any("score" in p.lower() for p in parts):
+                        indices = [i for i, p in enumerate(parts) if "score" in p.lower()]
+                        score_col_idx = indices[0]
+                        continue
+
                     parsed_score: Optional[float] = None
-                    if parts:
+                    if score_col_idx is not None and score_col_idx < len(parts):
+                        try:
+                            parsed_score = float(parts[score_col_idx])
+                        except ValueError:
+                            pass
+
+                    if parsed_score is None:
                         try:
                             parsed_score = float(parts[-1])
                         except ValueError:

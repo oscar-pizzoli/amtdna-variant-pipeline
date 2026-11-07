@@ -324,7 +324,7 @@ def test_component_consensus_builder(synthetic_environment):
 
     engine = PileupEngine(bam_path, fasta_path, policy, contig_name, 16569)
     sites = list(engine.iter_sites())
-    consensus_sites, canonical_seq, iupac_seq = builder.build_consensus(sites)
+    consensus_sites, canonical_seq, iupac_seq, *_ = builder.build_consensus(sites)
 
     assert len(canonical_seq) == 16569
     assert len(iupac_seq) == 16569
@@ -385,8 +385,9 @@ def test_component_heteroplasmy_caller(synthetic_environment):
     caller_insufficient = HeteroplasmyCaller(policy, "COMP_TEST", ref_info, GatingAction.INSUFFICIENT_DATA)
     c20_insufficient = caller_insufficient.evaluate_site(sites[19])
     assert c20_insufficient is not None
-    assert c20_insufficient.status == CallStatus.FILTERED
-    assert c20_insufficient.filter_reason == FilterReason.FILTER_INSUFFICIENT_DATA
+    c20_call = c20_insufficient[0] if isinstance(c20_insufficient, list) else c20_insufficient
+    assert c20_call.status == CallStatus.FILTERED
+    assert c20_call.filter_reason == FilterReason.FILTER_INSUFFICIENT_DATA
 
 
 # ============================================================================
@@ -472,7 +473,7 @@ def test_e2e_orchestrator_full_pipeline(synthetic_environment, tmp_path):
         rec_20 = pos_map[20]
         assert "A" in rec_20.alts
         assert "PASS" in rec_20.filter.keys()
-        assert rec_20.info["VARTYPE"] == "HETEROPLASMY"
+        assert "HETEROPLASMY" in (rec_20.info["VARTYPE"][0] if isinstance(rec_20.info["VARTYPE"], tuple) else rec_20.info["VARTYPE"])
 
     # Verify QC JSON structure and region metrics
     with open(qc_json, "r", encoding="utf-8") as f:

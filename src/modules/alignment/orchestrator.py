@@ -112,7 +112,10 @@ class AlignmentOrchestrator:
             result.add_warning(msg, AlignmentWarningCode.HIGH_DUPLICATION_RATE)
 
         # 4. Context-aware raw mapping rate check
-        min_map_rate = getattr(policy, "min_mapping_rate_pct", 0.10)
+        min_map_rate = getattr(policy, "min_mapping_rate_pct", 10.0)
+        # If min_map_rate was specified as fraction <= 1.0 (e.g. 0.10), interpret as percentage (10.0%)
+        if min_map_rate <= 1.0:
+            min_map_rate = min_map_rate * 100.0
         if metrics.raw_mapping_rate_pct is not None and metrics.raw_mapping_rate_pct < min_map_rate:
             if cov.mean_depth_post_dedup >= policy.min_mean_depth:
                 logger.info(

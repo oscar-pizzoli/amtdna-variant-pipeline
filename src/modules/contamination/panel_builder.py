@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mtDNA_Pipeline.PanelBuilder")
 
-# Risoluzione dinamica della radice del progetto
+# Dynamic project root resolution
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 

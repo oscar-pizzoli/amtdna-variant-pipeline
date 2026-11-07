@@ -152,7 +152,7 @@ class ContaminationQCValidator:
     @classmethod
     def categorize_contamination(
         cls,
-        estimate: ContaminationEstimate,
+        estimate: Any,
         confidence: EstimationConfidence,
         diagnostics: ModelQualityDiagnostics,
         policy: ContaminationPolicy,
@@ -167,16 +167,20 @@ class ContaminationQCValidator:
         if diagnostics.mean_depth < policy.min_coverage_for_estimation:
             return ContaminationCategory.INSUFFICIENT_DATA, codes, warnings
 
-        # Per il Pre-Screening Triage, la categoria rispecchia l'assenza di segnale
-        if estimate.method_used == ContaminationMethod.FAST_SCREEN_TRIAGE:
-            if confidence == EstimationConfidence.LOW:
+        # Support float or ContaminationEstimate
+        if isinstance(estimate, (int, float)):
+            point = float(estimate)
+            ci_high = None
+        else:
+            # For Pre-Screening Triage, category reflects absence of contamination signal
+            if getattr(estimate, "method_used", None) == ContaminationMethod.FAST_SCREEN_TRIAGE:
+                if confidence == EstimationConfidence.LOW:
+                    return ContaminationCategory.LOW, codes, warnings
                 return ContaminationCategory.LOW, codes, warnings
-            return ContaminationCategory.LOW, codes, warnings
+            point = estimate.point_estimate
+            ci_high = getattr(estimate, "ci_upper_95", None)
 
-        point = estimate.point_estimate
-        ci_high = estimate.ci_upper_95
-
-        # Valutazione congiunta conservativa: Point Estimate + Upper Credible Bound
+        # Conservative joint evaluation: Point Estimate + Upper Credible Bound
         if point <= policy.low_threshold:
             if ci_high is not None and ci_high > policy.elevated_threshold:
                 codes.append(ContaminationWarningCode.BROAD_CREDIBLE_INTERVAL)
@@ -223,7 +227,7 @@ class ContaminationQCValidator:
         policy: ContaminationPolicy,
     ) -> GatingRecommendation:
         """Formulates actionable gating constraints for Block 6 following a strict safety hierarchy."""
-        # Tier 1: Dati Insufficienti o Modello Inaffidabile
+        # Tier 1: Insufficient Data or Unreliable Model
         if category == ContaminationCategory.INSUFFICIENT_DATA or confidence == EstimationConfidence.UNRELIABLE:
             return GatingRecommendation(
                 contamination_category=category,
@@ -236,7 +240,7 @@ class ContaminationQCValidator:
                 ),
             )
 
-        # Tier 2: Modificatore di Bassa Confidenza (Si applica a TUTTI i metodi inclusi FastScreen)
+        # Tier 2: Low-Confidence Modifier (Applies across ALL methods including FastScreen)
         if confidence == EstimationConfidence.LOW:
             if category == ContaminationCategory.LOW:
                 return GatingRecommendation(

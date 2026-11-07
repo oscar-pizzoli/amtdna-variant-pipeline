@@ -71,6 +71,34 @@ class ContaminationOrchestrationError(Exception):
 class ContaminationOrchestrator:
     """Orchestrates mtDNA contamination estimation, pre-screening triage, and downstream gating."""
 
+    @classmethod
+    def run_sample_contamination_pipeline(
+        cls,
+        sample_id: str,
+        reference_info: ReferenceInfo,
+        input_bam: Path,
+        output_dir: Path,
+        log_dir: Path,
+        policy: Optional[ContaminationPolicy] = None,
+        threads: int = 4,
+        allow_fallback_to_dissent: Optional[bool] = None,
+    ) -> ContaminationResult:
+        orch = cls()
+        if policy is not None:
+            orch.policy = policy
+        if allow_fallback_to_dissent is not None:
+            orch.policy.allow_fallback_to_dissent = allow_fallback_to_dissent
+        db_path = getattr(orch.policy.schmutzi, "contaminant_database", None) if hasattr(orch.policy, "schmutzi") else None
+        context = ContaminationInputContext(
+            sample_id=sample_id,
+            input_bam_path=input_bam,
+            reference_fasta_path=reference_info.fasta_path,
+            reference_contig=reference_info.contig_name,
+            reference_length_bp=reference_info.length_bp,
+            contaminant_database_path=db_path,
+        )
+        return orch.process_sample(context=context, output_dir=output_dir)
+
     def __init__(
         self,
         config: Optional[Dict[str, Any]] = None,
@@ -236,7 +264,7 @@ class ContaminationOrchestrator:
 
         if self.policy.method == ContaminationMethod.SCHMUTZI and context.is_ancient:
             db_dir = self.policy.schmutzi.contaminant_database
-            if not db_dir or not db_dir.is_dir():
+            if not db_dir or not (db_dir.is_dir() or db_dir.is_file()):
                 return ContaminationErrorCode.DATABASE_MISSING, f"Schmutzi allele database not found at {db_dir}"
 
         return None
@@ -506,6 +534,17 @@ class ContaminationOrchestrator:
             policy=self.policy,
             output_json_dir=None,
         )
+
+        for w_code in result.warning_codes:
+            if w_code not in qc_result.warning_codes:
+                qc_result.warning_codes.append(w_code)
+        for w_msg in result.warnings:
+            if w_msg not in qc_result.warnings:
+                qc_result.warnings.append(w_msg)
+        if result.fallback_reason:
+            qc_result.fallback_reason = result.fallback_reason
+        if result.status == ContaminationStatus.WARN and qc_result.status == ContaminationStatus.PASS:
+            qc_result.status = ContaminationStatus.WARN
 
         qc_result.mark_finished()
         qc_result.runtime_seconds = round(time.perf_counter() - t_task_start, 2)

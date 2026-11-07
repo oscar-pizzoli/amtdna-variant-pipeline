@@ -315,10 +315,13 @@ class SchmutziEngine:
             return converged, iterations, warn_damage_pattern, multiple_contaminants
 
         convergence_pattern = re.compile(
-            r"stable\s+contamination\s+rate\s+at\s+iteration\s+#\s*(\d+)",
+            r"(?:stable\s+contamination\s+rate\s+at\s+iteration\s*#?\s*(\d+)|posterior\s+estimation\s+complete)",
             re.IGNORECASE,
         )
-        iter_pattern = re.compile(r"ITERATION\s+#\s*(\d+)", re.IGNORECASE)
+        iter_pattern = re.compile(r"iteration\s*#?\s*(\d+)", re.IGNORECASE)
+
+        hgs: List[str] = []
+        info_sites: int = 0
 
         try:
             with open(log_path, "r", encoding="utf-8", errors="replace") as f:
@@ -327,13 +330,17 @@ class SchmutziEngine:
                     if not line_str:
                         continue
 
+                    if "posterior estimation complete" in line_str.lower() or "converged" in line_str.lower():
+                        converged = True
+
                     m_conv = convergence_pattern.search(line_str)
                     if m_conv:
                         converged = True
-                        try:
-                            iterations = max(iterations, int(m_conv.group(1)))
-                        except ValueError:
-                            pass
+                        if m_conv.group(1):
+                            try:
+                                iterations = max(iterations, int(m_conv.group(1)))
+                            except ValueError:
+                                pass
 
                     m_iter = iter_pattern.search(line_str)
                     if m_iter:
@@ -341,6 +348,14 @@ class SchmutziEngine:
                             iterations = max(iterations, int(m_iter.group(1)))
                         except ValueError:
                             pass
+
+                    m_hg = re.search(r"predicted\s+haplogroup:\s*([A-Za-z0-9]+)", line_str, re.I)
+                    if m_hg:
+                        hgs.append(m_hg.group(1))
+
+                    m_sites = re.search(r"(\d+)\s+informative\s+positions", line_str, re.I)
+                    if m_sites:
+                        info_sites = int(m_sites.group(1))
 
                     line_lower = line_str.lower()
                     if "deaminated contaminant" in line_lower or "damage on contaminant" in line_lower:
@@ -351,7 +366,7 @@ class SchmutziEngine:
         except Exception as exc:
             logger.warning(f"Failed parsing schmutzi log {log_path.name}: {exc}")
 
-        return converged, iterations, warn_damage_pattern, multiple_contaminants
+        return converged, iterations, hgs, info_sites, warn_damage_pattern, multiple_contaminants
 
     @classmethod
     def parse_contaminant_haplogroups(

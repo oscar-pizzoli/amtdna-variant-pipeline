@@ -510,7 +510,7 @@ class SampleMasterRecord:
 
     @property
     def is_bam_mode(self) -> bool:
-        """Indica se il campione è stato ingerito direttamente da BAM senza preprocessing FASTQ."""
+        """Indicates whether the sample was ingested directly from BAM without FASTQ preprocessing."""
         return getattr(self.preprocessing, "output_profile", "") == "BAM_PASSTHROUGH"
 
     def validate_invariants(self) -> List[InvariantViolation]:
@@ -737,7 +737,7 @@ class SampleMasterRecord:
             shift_supp_str,
         ])
 
-        # 3. Metriche di Trimming e Qualità FASTQ (10) - Omesse in modalità BAM
+        # 3. Trimming and FASTQ Quality Metrics (10) - Omitted in BAM mode
         if not self.is_bam_mode:
             row.extend([
                 format_na(sq.raw_reads_total if sq.raw_reads_total is not None else self.preprocessing.raw_reads_total),

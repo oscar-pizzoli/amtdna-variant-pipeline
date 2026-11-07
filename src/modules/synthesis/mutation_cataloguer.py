@@ -87,7 +87,7 @@ class MutationCataloguer:
                 f"Invalid reference length resolved from reference_info: '{self.reference_length}'."
             )
 
-        # Inizializzazione flessibile: istanza con argomenti o fallback a classe senza stato
+        # Flexible initialization: instance with arguments or stateless class fallback
         try:
             self.normalizer = CoordinateNormalizer(
                 reference_length=self.reference_length,
@@ -352,7 +352,7 @@ class MutationCataloguer:
         """
         het_lookup: Dict[str, Tuple[CanonicalMutation, Dict[str, Any]]] = {}
 
-        # 1. Strategia Primaria: Ingestione da heteroplasmy.tsv
+        # 1. Primary Strategy: Ingestion from heteroplasmy.tsv
         if het_tsv_path and het_tsv_path.is_file():
             try:
                 with open(het_tsv_path, "r", encoding="utf-8") as fp:
@@ -503,7 +503,7 @@ class MutationCataloguer:
                         is_back_mutation=is_back,
                     )
 
-        # Polimorfismi privati del campione
+        # Sample private polymorphisms
         remaining_tokens = (
             data.get("private_mutations")
             or data.get("remaining_mutations")
@@ -579,7 +579,7 @@ class MutationCataloguer:
         ]
         b7_path = next((p for p in b7_candidates if p.is_file()), Path("non_existent_b7.json"))
 
-        # 1. Ingestione dei flussi primari
+        # 1. Primary stream ingestion
         vcf_records = self._parse_vcf(vcf_path) if vcf_path else []
         het_details = self._ingest_heteroplasmy_evidence(
             sample_id=sample_id,
@@ -670,7 +670,7 @@ class MutationCataloguer:
                         filter_status="PASS",
                     )
 
-        # 4. Integrazione delle varianti puramente filogenetiche (es. Back-Mutations rCRS)
+        # 4. Integration of purely phylogenetic variants (e.g. rCRS Back-Mutations)
         for key, p_info in phylo_markers.items():
             if key in state_map:
                 state_map[key].sources.add("PHYLOGENY")

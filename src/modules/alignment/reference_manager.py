@@ -337,11 +337,11 @@ class ReferenceManager:
         if not path.is_file():
             raise ReferenceManagerError(f"Reference FASTA does not exist: {path}")
 
-        # 1. Hashing dell'intero file
+        # 1. Whole-file hashing
         file_sha = cls.compute_file_sha256(path)
         passed_checks.append("FILE_SHA256_COMPUTED")
 
-        # 2. Parsing sequenza, calcolo MD5 biologico, verifica caratteri e singolo contig
+        # 2. Sequence parsing, biological MD5 calculation, character and single contig verification
         seq_md5, seq_id, desc, seq_len, parse_warn, parse_err = cls.parse_and_hash_sequence(
             file_path=path,
             allow_n=allow_n,
@@ -352,7 +352,7 @@ class ReferenceManager:
         if not parse_err:
             passed_checks.append("FASTA_STRUCTURE_AND_BASES_VALID")
 
-        # 3. Verifica corrispondenza contig (Strict vs Alias Mode)
+        # 3. Contig match verification (Strict vs Alias Mode)
         contig_name = seq_id
         if seq_id == expected_contig:
             passed_checks.append("CONTIG_EXACT_MATCH")
@@ -368,7 +368,7 @@ class ReferenceManager:
                 f"expected '{expected_contig}' (strict_contig={strict_contig})."
             )
 
-        # 4. Verifica biologica di lunghezza e MD5 atteso
+        # 4. Biological length and expected MD5 verification
         if expected_length is not None and seq_len > 0:
             if seq_len == expected_length:
                 passed_checks.append("LENGTH_EXACT_MATCH")
@@ -385,7 +385,7 @@ class ReferenceManager:
                     f"Biological sequence MD5 mismatch: expected '{expected_sequence_md5}', got '{seq_md5}'."
                 )
 
-        # 5. Verifica e generazione indici BWA
+        # 5. BWA index verification and generation
         has_bwa, bwa_reason = cls.check_bwa_index(path)
         if not has_bwa:
             if auto_index and not errors:
@@ -400,7 +400,7 @@ class ReferenceManager:
         else:
             passed_checks.append("BWA_INDEX_VERIFIED")
 
-        # 6. Verifica e generazione indice FAI
+        # 6. FAI index verification and generation
         has_fai, fai_reason = cls.parse_and_validate_fai(
             fasta_path=path,
             expected_contig=seq_id,
@@ -423,7 +423,7 @@ class ReferenceManager:
         else:
             passed_checks.append("FAI_INDEX_CROSS_VALIDATED")
 
-        # 7. Costruzione del modello ReferenceInfo sincronizzato al 100%
+        # 7. 100% synchronized ReferenceInfo model construction
         ref_info = ReferenceInfo(
             fasta_path=path,
             sequence_id=seq_id,

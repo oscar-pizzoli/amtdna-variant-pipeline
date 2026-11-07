@@ -9,7 +9,27 @@ import math
 import os
 from typing import Iterable, List, Optional, Tuple
 
-from scipy.stats import fisher_exact
+try:
+    from scipy.stats import fisher_exact
+except ImportError:
+    def fisher_exact(table: List[List[int]], alternative: str = "two-sided") -> Tuple[float, float]:
+        """Pure-python fallback for Fisher exact test using hypergeometric distribution."""
+        a, b = table[0]
+        c, d = table[1]
+        n = a + b + c + d
+        if n == 0:
+            return 1.0, 1.0
+        def hypergeom_prob(x: int) -> float:
+            try:
+                return (math.comb(a + b, x) * math.comb(c + d, a + c - x)) / math.comb(n, a + c)
+            except (ValueError, ZeroDivisionError):
+                return 0.0
+        p_obs = hypergeom_prob(a)
+        min_x = max(0, a - d)
+        max_x = min(a + b, a + c)
+        p_total = sum(hypergeom_prob(x) for x in range(min_x, max_x + 1) if hypergeom_prob(x) <= p_obs + 1e-9)
+        odds_ratio = (a * d) / (b * c) if (b * c) > 0 else float("inf")
+        return odds_ratio, min(1.0, p_total)
 
 from src.modules.consensus.consensus_builder import ConsensusBuilder
 from src.modules.consensus.enums import (
@@ -120,7 +140,7 @@ class HeteroplasmyCaller:
         strand_pvalue_pass = strand_bias_pvalue >= self.policy.strand_bias_alpha
         strand_bias_pass = strand_reads_pass and strand_pvalue_pass
 
-        # Valutazione della geometria molecolare (supporto interno vs terminale)
+        # Evaluation of molecular geometry (internal vs terminal fragment support)
         alt_distances = site.read_end_distances.get(top2_base, [])
         threshold = self.policy.spatial_end_distance_threshold
 
@@ -133,7 +153,7 @@ class HeteroplasmyCaller:
         else:
             spatial_damage_suspect = False
 
-        # Verifica preliminare base di riferimento non canonica
+        # Preliminary check for non-canonical reference base
         if ref_upper not in {"A", "C", "G", "T"}:
             filt_reason = (
                 FilterReason.FILTER_EXCLUDED_INTERVAL

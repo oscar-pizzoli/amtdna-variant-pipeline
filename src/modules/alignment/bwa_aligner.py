@@ -362,7 +362,7 @@ class BWAAligner:
         if not bam_path.is_file() or bam_path.stat().st_size == 0:
             raise BWAAlignerError(f"Branch BAM output is missing or empty: {bam_path.name}")
 
-        # 1. Controllo profondo di integrità BGZF con samtools quickcheck
+        # 1. Deep BGZF integrity check with samtools quickcheck
         if shutil.which("samtools"):
             res_qc = subprocess.run(["samtools", "quickcheck", "-v", str(bam_path)], capture_output=True, text=True, check=False)
             if res_qc.returncode != 0:
@@ -370,7 +370,7 @@ class BWAAligner:
                     f"BAM integrity verification failed ('samtools quickcheck' exit code {res_qc.returncode}) for {bam_path.name}: {res_qc.stderr.strip()}"
                 )
 
-        # 2. Ispezione logica e semantica degli header (@RG ed @SQ)
+        # 2. Logical and semantic header inspection (@RG and @SQ)
         try:
             with pysam.AlignmentFile(str(bam_path), "rb", check_sq=False) as bam_f:
                 header = bam_f.header.to_dict()
@@ -388,7 +388,7 @@ class BWAAligner:
                         f"Expected Read Group ID '{rg_info.read_group_id}' not found in BAM header of {bam_path.name}. Found: {found_ids}"
                     )
 
-                # Verifica semantica approfondita dei campi obbligatori
+                # In-depth semantic verification of mandatory fields
                 if target_rg.get("SM") != rg_info.sample_id:
                     raise BWAAlignerError(
                         f"Read Group SM mismatch in {bam_path.name}: expected '{rg_info.sample_id}', found '{target_rg.get('SM')}'"

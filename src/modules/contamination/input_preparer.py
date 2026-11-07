@@ -305,6 +305,24 @@ class SchmutziInputPreparer:
         return output_bam
 
     @classmethod
+    def sample_md_tags_present(cls, bam_path: Path, max_reads_to_check: int = 100) -> bool:
+        """Checks if MD tags are present in mapped reads."""
+        try:
+            with pysam.AlignmentFile(str(bam_path), "rb") as bf:
+                checked = 0
+                for read in bf:
+                    if read.is_unmapped:
+                        continue
+                    if read.has_tag("MD"):
+                        return True
+                    checked += 1
+                    if checked >= max_reads_to_check:
+                        break
+        except Exception:
+            pass
+        return False
+
+    @classmethod
     def prepare_bam_for_schmutzi(
         cls,
         sample_id: str,
@@ -314,6 +332,7 @@ class SchmutziInputPreparer:
         subsampling_policy: Optional[SubsamplingPolicy] = None,
         threads: int = 4,
         allow_non_mt_contigs: bool = False,
+        force_calmd: bool = False,
     ) -> Tuple[Path, Path, bool, float, Optional[float]]:
         """Prepares and validates BAM strictly for schmutzi."""
         if not input_bam.is_file() or input_bam.stat().st_size == 0:
@@ -326,6 +345,16 @@ class SchmutziInputPreparer:
         )
 
         work_dir.mkdir(parents=True, exist_ok=True)
+
+        if not force_calmd and cls.sample_md_tags_present(input_bam):
+            target_bam = work_dir / f"{sample_id}.schmutzi_ready.bam"
+            if not target_bam.exists():
+                try:
+                    target_bam.symlink_to(input_bam.resolve())
+                except Exception:
+                    shutil.copyfile(input_bam, target_bam)
+            target_bai = cls.ensure_bai_index(target_bam, reference_info.contig_name, threads)
+            return target_bam, target_bai, False, 10.0, None
 
         orig_depth = cls.compute_contig_mean_depth(
             bam_path=input_bam,

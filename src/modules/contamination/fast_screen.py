@@ -266,7 +266,7 @@ class FastContaminationScreen:
         bam_sha = cls.compute_sha256(input_bam) if policy.cache_mode == "strict" else None
         ref_sha = cls.compute_sha256(reference_fasta)
 
-        # 2. Controllo Cache Deterministica
+        # 2. Deterministic Cache Verification
         if policy.cache_screen_results:
             cached = cls.load_cached_result(
                 cache_path=cache_file,
@@ -361,11 +361,11 @@ class FastContaminationScreen:
                     ref_base = ref_seq[pos_1based - 1].upper() if pos_1based <= target_contig_length else "N"
                     panel_alt = panel_dict[pos_1based].get("alt", ".") if panel_dict else "."
 
-                    # Rilevamento della base dominante del campione a questa posizione
+                    # Detect dominant sample base at this locus
                     most_common = base_counts.most_common()
                     major_base, major_count = most_common[0]
 
-                    # Dissenso = letture con base minoritaria (eteroplasmia / contaminazione)
+                    # Dissent = reads supporting minority base (heteroplasmy / contamination)
                     alt_count = site_usable_depth - major_count
                     alt_vaf = alt_count / float(site_usable_depth)
 
@@ -386,7 +386,7 @@ class FastContaminationScreen:
                 raise
             raise FastScreenExecutionError(f"Fast screen execution failed on {input_bam.name}: {exc}") from exc
 
-        # 5. Calcolo Metriche
+        # 5. Metrics Calculation
         mean_diagnostic_depth = (
             float(total_diagnostic_bases / evaluated_sites) if evaluated_sites > 0 else 0.0
         )

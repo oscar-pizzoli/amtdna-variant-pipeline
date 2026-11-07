@@ -131,11 +131,11 @@ class SamtoolsPipeline:
                     f"samtools quickcheck failed (exit code {res_qc.returncode}) on {bam_path.name}: {res_qc.stderr.strip()}"
                 )
 
-        # 2. Ispezione degli header e conteggio record con pysam
+        # 2. Header inspection and record counting with pysam
         total_records = 0
         try:
             with pysam.AlignmentFile(str(bam_path), "rb", check_sq=False) as bam_f:
-                # Sanity check: dichiarazione dell'ordinamento nell'header
+                # Sanity check: coordinate sorting declaration in header
                 so_flag = bam_f.header.get("HD", {}).get("SO")
                 if so_flag != "coordinate":
                     logger.warning(
@@ -383,7 +383,7 @@ class SamtoolsPipeline:
                 expected_contig=expected_contig,
             )
 
-            # 5. Generazione statistiche baseline (pre-filtro)
+            # 5. Baseline statistics generation (pre-filter)
             cmd_stats = cls.generate_samtools_stats(
                 bam_path=sorted_bam,
                 output_stats_txt=stats_txt,
@@ -391,7 +391,7 @@ class SamtoolsPipeline:
             )
             executed_cmds.append(cmd_stats)
 
-            # 6. Pulizia del BAM grezzo se richiesto dalla policy (production mode)
+            # 6. Raw BAM cleanup if requested by policy (production mode)
             if not keep_raw_merged_bam and merged_raw_bam.is_file():
                 merged_raw_bam.unlink()
                 merged_raw_bam = None

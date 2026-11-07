@@ -320,7 +320,7 @@ class TestSchmutziInputPreparer(unittest.TestCase):
         bam_with_md = create_synthetic_bam(self.test_dir / "valid.bam", self.ref_info, with_md=True)
         work_dir = self.test_dir / "prep_work"
 
-        prep_bam, prep_bai = SchmutziInputPreparer.prepare_bam_for_schmutzi(
+        prep_bam, prep_bai, *_ = SchmutziInputPreparer.prepare_bam_for_schmutzi(
             sample_id="SAMPLE_MD",
             input_bam=bam_with_md,
             reference_info=self.ref_info,
@@ -468,7 +468,7 @@ class TestQCValidatorFullMatrix(unittest.TestCase):
                 self.assertEqual(rec.preferred_consensus_source, exp_source)
 
     def test_exact_threshold_boundaries(self):
-        diag = ModelQualityDiagnostics(informative_positions_evaluated=20)
+        diag = ModelQualityDiagnostics(informative_positions_evaluated=20, mean_depth=15.0)
         # Boundary 0.0200 -> LOW
         c1, _, _ = ContaminationQCValidator.categorize_contamination(0.0200, EstimationConfidence.HIGH, diag, self.policy)
         self.assertEqual(c1, ContaminationCategory.LOW)

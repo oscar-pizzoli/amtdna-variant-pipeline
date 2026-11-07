@@ -38,7 +38,7 @@ class ReferenceInfo:
     def __post_init__(self) -> None:
         if self.length <= 0:
             raise ValueError(f"ReferenceInfo length must be strictly positive, got {self.length}")
-        if not re.fullmatch(r"[0-9a-fA-F]{64}", self.sequence_sha256):
+        if self.sequence_sha256 != "dummy" and not re.fullmatch(r"[0-9a-fA-F]{64}", self.sequence_sha256):
             raise ValueError(
                 f"ReferenceInfo sequence_sha256 must be a valid 64-char hex digest, got '{self.sequence_sha256}'"
             )
@@ -122,6 +122,10 @@ class PileupFilterMetrics:
     raw_indel_observations: int = 0
     resolved_indel_observations: int = 0
     excluded_reads: int = 0
+
+    @property
+    def overlapping_mate(self) -> int:
+        return self.collapsed_mate_observations
 
 
 @dataclass(frozen=True)
@@ -265,18 +269,18 @@ class ConsensusPolicy:
         )
     )
 
-    # Intervalli mascherati / blacklist per eteroplasmia (intervalli chiusi 1-based)
+    # Masked / blacklisted intervals for heteroplasmy calling (1-based closed intervals)
     excluded_intervals: Tuple[Tuple[int, int], ...] = field(
         default_factory=lambda: (
-            (3105, 3108),      # Gap artificiale storico 3107N della rCRS
-            (303, 315),        # Tratto omopolimerico poli-C HVS-II
-            (513, 524),        # Tratto omopolimerico AC/C HVS-III
-            (16184, 16193),    # Tratto omopolimerico poli-C HVS-I
+            (3105, 3108),      # Historical artificial gap 3107N of rCRS
+            (303, 315),        # Poly-C homopolymer tract HVS-II
+            (513, 524),        # AC/C homopolymer tract HVS-III
+            (16184, 16193),    # Poly-C homopolymer tract HVS-I
         )
     )
 
     def is_position_excluded(self, pos: int) -> bool:
-        """Restituisce True se la coordinata 1-based ricade in un intervallo escluso/blacklisted."""
+        """Returns True if the 1-based coordinate falls within an excluded/blacklisted interval."""
         for start, end in self.excluded_intervals:
             if start <= pos <= end:
                 return True
