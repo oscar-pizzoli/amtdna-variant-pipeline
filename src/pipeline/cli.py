@@ -55,7 +55,18 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Manual host core count override.",
     )
-    parser.add_argument(
+    cache_group = parser.add_mutually_exclusive_group()
+    cache_group.add_argument(
+        "-u", "--use-cache",
+        action="store_true",
+        help="Non-interactively reuse existing sample cache deliverables whenever valid.",
+    )
+    cache_group.add_argument(
+        "-n", "--no-cache",
+        action="store_true",
+        help="Non-interactively bypass existing cache deliverables and recompute stages fresh.",
+    )
+    cache_group.add_argument(
         "-m", "--cache-mode",
         type=str,
         default=None,
@@ -70,6 +81,10 @@ def parse_arguments() -> argparse.Namespace:
         help="Logging verbosity level (default: INFO).",
     )
     args = parser.parse_args()
+    if args.use_cache:
+        args.cache_mode = "reuse"
+    elif args.no_cache:
+        args.cache_mode = "overwrite"
     if args.data_type:
         args.data_type = args.data_type.upper()
     return args

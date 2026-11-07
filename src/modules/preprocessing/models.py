@@ -48,6 +48,7 @@ class SampleIdentity:
     sample_id: str
     library_id: Optional[str] = None
     run_id: Optional[str] = None
+    sample_hash: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes identity fields to dictionary."""
@@ -55,6 +56,7 @@ class SampleIdentity:
             "sample_id": self.sample_id,
             "library_id": self.library_id or self.sample_id,
             "run_id": self.run_id or "run_01",
+            "sample_hash": self.sample_hash,
         }
 
 
@@ -90,6 +92,7 @@ class InputFiles:
     r1_path: Optional[Path] = None
     r2_path: Optional[Path] = None
     bam_path: Optional[Path] = None
+    sample_hash: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Enforces domain consistency on input paths."""

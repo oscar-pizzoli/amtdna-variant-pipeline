@@ -176,11 +176,297 @@ To run in direct BAM mode (omitting `-i` automatically selects `data/raw_bam`):
 python scripts/run_complete_pipeline.py -d BAM
 ```
 
-To specify a custom input directory and overwrite the existing cache:
+To specify a custom input directory and non-interactively force recomputation (`-n` / `--no-cache`):
 
 ```bash
-python scripts/run_complete_pipeline.py -d FASTQ -i /path/to/my_samples -m overwrite
+python scripts/run_complete_pipeline.py -d FASTQ -i /path/to/my_samples -n
 ```
+
+> [!NOTE]
+> **Non-destructive Overwrite Protection**: Choosing `-n` (`--no-cache`) forces the pipeline to recompute all stages from scratch without deleting previous cache deliverables upfront. If execution is interrupted or encounters an error (e.g. invalid parameter), your previous valid deliverables remain safely intact on disk.
+
+To non-interactively reuse existing valid cache deliverables (`-u` / `--use-cache`):
+
+```bash
+python scripts/run_complete_pipeline.py -d FASTQ -u
+```
+
+To run with a custom configuration file:
+
+```bash
+python scripts/run_complete_pipeline.py -c config/my_custom_config.yaml
+```
+
+---
+
+## ⚙️ Pipeline Configuration Guide (`config/default_config.yaml`)
+
+The pipeline is fully parameter-driven via [`config/default_config.yaml`](config/default_config.yaml). All analytical thresholds, software flags, directory layouts, and hardware allocation limits can be tuned here without editing any Python code.
+
+### 1. Global Resources & System Optimization (`resources`, `output`)
+
+```yaml
+resources:
+  threads: 8                   # Maximum total CPU threads allocated across pipeline stages
+  max_memory_gb: 16            # Peak RAM limit in gigabytes before triggering disk spill
+  cpu_budget_fraction: 0.50    # Fraction of host CPUs allowed for parallel jobs (0.50 = 50%)
+  host_cores_override: null    # Force manual CPU core count (null = autodetect from host system)
+
+output:
+  results_dir: "results"                     # Final sanitized deliverable directory
+  operational_files_dir: "operational_files" # Intermediate operational scratch directory & cache
+  cache_mode: "prompt"                       # Cache handling: 'prompt' (ask on start), 'reuse', or 'overwrite'
+  save_intermediate_bams: false              # If true, preserves unrescaled and intermediate BAMs
+  compress_outputs: true                     # Apply bgzip/gzip compression to final deliverable files
+```
+
+> [!TIP]
+> **HPC / Cloud Deployment**: When running on multi-core servers, set `cpu_budget_fraction: 0.75` (or higher) to maximize throughput. The resource manager automatically calculates worker concurrency for Schmutzi ($3\text{ threads/instance}$) and upstream alignment jobs.
+
+---
+
+### 2. Sequence Input & Reference Genome (`input`, `reference`, `integrity`)
+
+```yaml
+input:
+  data_type: "FASTQ"                     # Sequence format: 'FASTQ' or 'BAM'
+  raw_fastq_dir: "data/raw_fastq"        # Default target folder for raw FASTQ inputs
+  raw_bam_dir: "data/raw_bam"            # Default target folder for pre-aligned BAM inputs
+  input_dir: null                        # Manual override path (null = auto-routes via data_type)
+  layout: "AUTO"                         # Read layout: 'AUTO' (inferred by tokenizer), 'PAIRED', or 'SINGLE'
+  pairing_patterns:
+    r1: ["_R1", "_1", ".R1", ".1"]
+    r2: ["_R2", "_2", ".R2", ".2"]
+
+integrity:
+  mode: "strict"                         # Input validation: 'fast' (magic bytes + size) or 'strict' (full SHA-256)
+
+reference:
+  fasta_path: "data/reference/rCRS.fasta"  # Path to canonical rCRS reference FASTA
+  expected_contig: "NC_012920.1"          # Expected mitochondrial chromosome ID
+  strict_contig: true                     # Fail immediately if BAM/VCF contig does not match
+  expected_length: 16569                  # Canonical reference length in base pairs
+  is_circular: true                       # Enables circular wraparound coordinate awareness
+  auto_index: true                        # Automatically generates .fai and BWA indexes if missing
+```
+
+---
+
+### 3. Read Trimming & Merging (`preprocessing`) — Block 2
+
+```yaml
+preprocessing:
+  tool: "AdapterRemoval"         # Trimming software: 'AdapterRemoval' (recommended) or 'fastp'
+  min_read_length: 30            # Minimum fragment length retained post-trimming (aDNA standard = 30 bp)
+  min_merge_overlap: 11          # Minimum overlap (bp) required to merge paired-end read pairs
+  collapse_reads: true           # Merge overlapping paired-end reads into full-length single fragments
+  trim_ns: true                  # Strip ambiguous 'N' bases from 5' and 3' read termini
+```
+
+---
+
+### 4. Ancient Alignment, Deduplication & Quality Gates (`alignment`, `deduplication`, `filtering`) — Block 3
+
+```yaml
+alignment:
+  aligner: "bwa-aln"             # Alignment algorithm: 'bwa-aln' (specialized for ultrashort degraded DNA)
+  threads: 4                     # Dedicated threads for mapping processes
+
+  bwa_aln:
+    seed_length: 1000            # Disables seeding (-l 1000), allowing deaminations across the full read
+    max_diff: 0.01               # Maximum edit distance (-n 0.01 stringency tuned for ancient reads)
+    max_gap_opens: 2             # Maximum allowed gap open operations (-o 2)
+    trim_quality_threshold: 0    # Quality trimming disabled (-q 0) to avoid terminal base composition bias
+
+deduplication:
+  mode: "both"                   # PCR duplicate removal mode: 'both' coordinates (5' and 3'), or 'picard'
+
+filtering:
+  multimapping:
+    min_mapq: 30                 # Minimum Mapping Quality threshold (MAPQ >= 30 ensures unique placement)
+    filter_unmapped: true        # Exclude unmapped reads from working BAM
+    filter_secondary: true       # Exclude secondary alignments (flag 0x100)
+    filter_supplementary: true   # Exclude chimeric/supplementary alignments (flag 0x800)
+
+  thresholds:
+    min_mean_depth: 3.0          # Hard gate: Minimum mean coverage depth required to proceed (3.0x)
+    min_breadth_3x_fraction: 0.80# Gate: Minimum 80% of the mitogenome covered by >= 3 reads
+    max_duplication_rate_fraction: 0.85 # Warning flag if duplicate reads exceed 85%
+```
+
+---
+
+### 5. aDNA Deamination Profiling & Quality Rescaling (`damage`) — Block 4
+
+```yaml
+damage:
+  library_treatment: "NONE"           # Chemical preparation: 'NONE' (Non-UDG), 'HALF' (UDG-half), 'FULL' (UDG-full)
+
+  execution:
+    terminal_positions_to_profile: 25 # Number of terminal base positions analyzed for deamination
+    threads: 4                        # Dedicated threads for mapDamage2 execution
+    rescaling:
+      enabled: true                   # Enable mapDamage Bayesian quality score downscaling
+    pmd:
+      enabled: true                   # Calculate PMDtools individual read degradation scores
+      threshold: 3.0                  # Score threshold classifying an individual read as authentic aDNA
+
+  thresholds:
+    terminal_deamination:
+      min_c_to_t_5p_strong: 0.10      # Strong authenticity signal: >= 10% 5'-C>T transition at position 1
+      min_c_to_t_5p_moderate: 0.03    # Moderate authenticity signal: >= 3% 5'-C>T transition at position 1
+    fragmentation:
+      max_median_length_bp: 80        # Ancient DNA fragmentation ceiling (authentic aDNA is typically 40-75 bp)
+```
+
+> [!IMPORTANT]
+> **Library Treatment Selection**: If your library was treated with Uracil-DNA Glycosylase:
+> * **`NONE` (Non-UDG)**: Full post-mortem damage profiling ($C \to T$ at $5'$, $G \to A$ at $3'$); terminal 5 bp masked during heteroplasmy calling.
+> * **`HALF` (UDG-half)**: Internal damage repaired, terminal bases retain deamination; terminal 2 bp masked during heteroplasmy calling.
+> * **`FULL` (UDG-full)**: All deaminations enzymatically excised; zero end-distance penalty applied.
+
+---
+
+### 6. Contamination Screening & Gating (`contamination`) — Block 5
+
+```yaml
+contamination:
+  enabled: true                       # Enable contamination estimation framework
+  method: "SCHMUTZI"                  # Primary estimation engine: 'SCHMUTZI'
+
+  fast_screening:
+    enabled: true                     # Pre-screen samples against 354 diagnostic Phylotree sites
+    diagnostic_panel_path: "data/reference/diagnostic_sites_phylotree17.tsv"
+    escalate_dissenting_sites_min: 3  # Discordant sites triggering full Schmutzi MCMC modeling
+
+  subsampling:
+    enabled: true                     # Subsample ultra-deep BAMs (Schmutzi operates optimally at ~40x)
+    target_depth: 40.0                # Target depth for subsampling
+
+  schmutzi:
+    database_path: "data/reference/schmutzi_db/197" # Allele frequency database of 197 contaminants
+    threads: 3                        # Dedicated threads per Schmutzi instance
+
+  thresholds:
+    low_threshold: 0.02               # <= 2% contamination: Clean sample, standard calling approved
+    moderate_threshold: 0.05          # 2% - 5%: Moderate contamination, restrict heteroplasmy calling
+    elevated_threshold: 0.10          # 5% - 10%: Elevated contamination, require PMD filtering or reject
+```
+
+---
+
+### 7. Dual-Stream Consensus & Heteroplasmy Calling (`consensus`) — Block 6
+
+```yaml
+consensus:
+  min_base_quality: 30                # Base quality floor (Q >= 30: 99.9% accuracy)
+  min_mapping_quality: 30             # Mapping quality floor (MAPQ >= 30: uniquely aligned reads)
+  min_consensus_depth: 10             # Minimum callable depth required to call a base; else masked to 'N'
+  major_allele_fraction: 0.80         # Major allele threshold (>= 80%) fixed into canonical FASTA
+  ambiguity_min_vaf: 0.10             # Variant fraction (>= 10%) triggering degenerate IUPAC codes
+  emit_iupac_fasta: true              # Emit {sample}.consensus_iupac.fasta capturing sub-clonal diversity
+  emit_subconsensus_vcf: true         # Emit secondary VCF for low-level damage/slippage audit
+
+  heteroplasmy:
+    enabled: true                     # Enable heteroplasmy and sub-threshold variant calling
+    min_depth: 15                     # Minimum callable depth required at locus
+    min_alt_reads: 3                  # Minimum non-reference read support
+    min_vaf: 0.10                     # Minimum Variant Allele Fraction (VAF >= 10%)
+    max_vaf: 0.80                     # Upper VAF limit (variants > 80% transition to fixed major consensus)
+    strand_bias_alpha: 0.05           # Significance threshold for Fisher exact test strand bias rejection
+
+    # Spatial Damage Authentication Filters (End-Distance Filters)
+    min_internal_fragments: 2         # Minimum reads supporting variant located internally
+    spatial_thresholds:
+      NON_UDG: 5                      # Non-UDG: filter mutations within terminal 5 bp
+      UDG_HALF: 2                     # UDG-half: filter mutations within terminal 2 bp
+      UDG_FULL: 0                     # UDG-full: zero end-distance penalty
+
+    # Masked Regions (Homopolymers & Historical Artifacts)
+    excluded_intervals:
+      - [3105, 3111]                  # Historical artificial 3107N gap in rCRS
+      - [303, 315]                    # HVS-II poly-C homopolymer tract
+      - [513, 524]                    # HVS-III AC/C repeat tract
+      - [16184, 16193]                # HVS-I poly-C homopolymer tract
+```
+
+---
+
+### 8. Haplogrouping & Lineage Concordance (`haplogroup`, `cross_block_audit`) — Block 7
+
+```yaml
+haplogroup:
+  tool: "haplogrep3"                  # Clade classification engine: 'haplogrep3'
+  tree_id: "phylotree-fu-rcrs"        # Reference phylogenetic tree database
+  tree_version: "1.2"                 # Phylotree 17 version tag
+  metric: "KULCZYNSKI"                # Distance metric for haplogroup assignment
+  min_quality_score: 0.80             # Minimum assignment score (0.0 - 1.0) required for confident call
+  cross_check_vcf: true               # Dual-stream: classify both consensus FASTA and VCF simultaneously
+
+validation:
+  max_n_percentage: 15.0              # Maximum tolerated percentage of 'N' bases (15%) before failing sample
+
+cross_block_audit:
+  max_missing_diagnostic_mutations: 2 # Maximum allowed missing diagnostic mutations before warning
+  max_private_mutations: 5            # Private mutation threshold triggering excess polymorphism warning
+  contam_affinity_threshold: 0.015    # Flags private mutations matching putative contaminant haplogroup
+```
+
+---
+
+### 💡 Quick Recipes for Common Casework
+
+#### Recipe A: Ancient Non-UDG Skeletal Remains (Default Production)
+```yaml
+input:
+  data_type: "FASTQ"
+preprocessing:
+  collapse_reads: true
+alignment:
+  bwa_aln:
+    seed_length: 1000
+    max_diff: 0.01
+damage:
+  library_treatment: "NONE"
+  rescaling:
+    enabled: true
+consensus:
+  heteroplasmy:
+    spatial_thresholds:
+      NON_UDG: 5
+```
+
+#### Recipe B: Modern High-Depth mtDNA (Medical or Forensic Casework)
+```yaml
+input:
+  data_type: "FASTQ"
+damage:
+  library_treatment: "NONE"
+  rescaling:
+    enabled: false                   # No deamination present; bypass rescaling
+contamination:
+  fast_screening:
+    enabled: true                    # Clean modern samples achieve instant FAST_CLEAR
+consensus:
+  min_consensus_depth: 20
+  heteroplasmy:
+    min_vaf: 0.03                    # High-sensitivity heteroplasmy detection down to 3% VAF
+    spatial_thresholds:
+      NON_UDG: 0                     # No terminal damage penalty needed for modern DNA
+```
+
+#### Recipe C: Pre-Aligned BAM Ingestion (Bypass Trimming & Mapping)
+```yaml
+input:
+  data_type: "BAM"
+  raw_bam_dir: "data/raw_bam"        # Place your coordinate-sorted .bam and .bai files here
+```
+Launch with:
+```bash
+python scripts/run_complete_pipeline.py -d BAM
+```
+
+---
 
 ---
 
@@ -193,11 +479,14 @@ Run `conda init bash` (or `conda init zsh` if your terminal uses Zsh), then **cl
 If Block 4 classifies a specimen as `MODERN` or `INCONCLUSIVE` (for example, when terminal deamination is below $3\%$), the pipeline bypasses Schmutzi to prevent mathematical division-by-zero crashes (`-nan` errors in `contDeam.pl`). You can inspect the observed damage rates in `operational_files/damage/<sample>/block4_contract.json`.
 
 #### 3. How do I force a complete recalculation when input data changes?
-Select **Overwrite (Purge & Recompute)** in the HUD sidebar or pass `--cache-mode overwrite` when launching from the terminal:
+Pass `-n` (or `--no-cache`) when launching from the terminal:
 
 ```bash
-python scripts/run_complete_pipeline.py --cache-mode overwrite
+python scripts/run_complete_pipeline.py -n
 ```
+
+Alternatively, pass `-u` (or `--use-cache`) to non-interactively reuse valid cache without prompts.
+Overwriting operates non-destructively: previously cached files are not wiped upfront, protecting existing work if an execution fails prematurely.
 
 #### 4. What does the warning `RESTRICT_HETEROPLASMY` mean in my report?
 When a sample exhibits moderate exogenous contamination ($2\%$ to $5\%$) or low estimation confidence, the pipeline raises the minimum Variant Allele Frequency (VAF) threshold to $25\%$ and minimum coverage depth to $20\text{x}$ so that low-frequency modern contaminant reads are not misidentified as authentic heteroplasmies.

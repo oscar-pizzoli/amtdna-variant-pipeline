@@ -349,10 +349,16 @@ class HaplogroupStep:
         config: PipelineConfig,
         operational_files_dir: Path,
         cache_dir: Path,
+        force_recompute: bool = False,
     ) -> Block7Contract:
         """Executes haplogroup assignment and emits Block 7 contract."""
         legacy_dir = operational_files_dir / "alignment" / sample_id
-        tracker = StageTracker.load_or_create(cache_dir, sample_id, legacy_dir=legacy_dir)
+        tracker = StageTracker.load_or_create(
+            cache_dir,
+            sample_id,
+            legacy_dir=legacy_dir,
+            force_recompute=force_recompute,
+        )
 
         block7_out = operational_files_dir / "haplogroup" / sample_id
         contract_json = block7_out / f"{sample_id}.block7_contract.json"

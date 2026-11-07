@@ -9,7 +9,7 @@ dependencies:
   # Core Runtimes & Interpreters
   # ----------------------------------------------------------------------------
   - python=3.12.3
-  - pip=26.2.1
+  - pip
   - openjdk=22.0.1
   - perl=5.32.1
   - r-base=4.3.3

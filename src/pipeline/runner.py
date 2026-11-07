@@ -25,7 +25,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 from src.steps.reference import ReferenceInfo, ReferenceStep
-from src.steps.discovery import DataType, DiscoveryStep, SampleRecord
+from src.steps.discovery import DataType, DiscoveryStep, SampleDiscoveryEngine, SampleRecord
 from src.steps.alignment import AlignmentResult, AlignmentStatus, AlignmentStep
 from src.steps.damage import DamageResult, DamageStep
 from src.steps.contamination import ContaminationBatchRunner, ContaminationResult, ContaminationStep, ResourceAllocation
@@ -35,6 +35,7 @@ from src.steps.synthesis import SampleMasterRecord, SynthesisOrchestrator, Synth
 from src.utils import (
     calculate_sha256,
     compute_composite_hash,
+    compute_sample_input_hash,
     extract_input_paths,
     load_pipeline_config,
     PipelineConfig,
@@ -88,6 +89,7 @@ class EndToEndPipelineRunner:
         # Cache handling policy from YAML ('prompt', 'reuse', or 'overwrite')
         raw_cache_mode = cache_mode_override or self.out_cfg.get("cache_mode", "prompt")
         self.cache_mode = str(raw_cache_mode).lower()
+        self.force_recompute: bool = (self.cache_mode == "overwrite")
 
         # Operational workspace vs final release deliverables
         self.results_dir = resolve_path(self.out_cfg.get("results_dir", "results"), PROJECT_ROOT / "results")
@@ -132,71 +134,77 @@ class EndToEndPipelineRunner:
         self,
         cache_mode: str = "prompt",
         target_sample_ids: Optional[List[str]] = None,
+        target_sample_hashes: Optional[Dict[str, str]] = None,
     ) -> str:
         """Enforces cache policy ('prompt', 'reuse', or 'overwrite')."""
         detected_cache = StageTracker.inspect_operational_cache(
             self.operational_files_dir,
             target_sample_ids=target_sample_ids,
+            target_sample_hashes=target_sample_hashes,
         )
-
-        if not detected_cache:
-            logger.info("No pre-existing cache artifacts detected in operational_files/.")
-            return "reuse"
 
         mode = str(cache_mode or "prompt").lower()
 
+        if not detected_cache:
+            logger.info("No pre-existing cache artifacts detected in operational_files/.")
+            if mode == "overwrite":
+                self.force_recompute = True
+                return "overwrite"
+            self.force_recompute = False
+            return "reuse"
+
         if mode == "overwrite":
-            logger.info("Cache policy set to OVERWRITE: purging existing cached artifacts...")
-            StageTracker.purge_operational_cache(
-                self.operational_files_dir,
-                results_dir=self.results_dir,
-                target_sample_ids=target_sample_ids,
+            logger.info(
+                "Cache policy set to OVERWRITE: all stages will be recomputed fresh "
+                "without deleting existing cache deliverables beforehand."
             )
+            self.force_recompute = True
             return "overwrite"
 
         if mode == "reuse":
             logger.info(f"Cache policy set to REUSE: retaining cached artifacts for {len(detected_cache)} sample(s).")
+            self.force_recompute = False
             return "reuse"
 
         if not sys.stdin.isatty():
             logger.info(f"Non-interactive terminal detected with {len(detected_cache)} cached sample(s); defaulting to REUSE.")
+            self.force_recompute = False
             return "reuse"
 
-        print("\n" + "!" * 115)
-        print(f"⚠️  EXISTING CACHE DETECTED IN: {self.operational_files_dir}")
-        print("-" * 115)
+        print("\n┌── ⚠️  Cached Stages Detected ────────────────────────────────┐")
+        print(f"│ Location: {self.operational_files_dir}")
         for s_id, stages in detected_cache.items():
             stages_str = ", ".join(stages)
-            print(f"   • Sample '{s_id}': [{stages_str}]")
-        print("-" * 115)
-        print("How would you like to proceed?")
-        print("   [1] Reuse cache     - Resume execution using valid cached stages (Default)")
-        print("   [2] Overwrite cache - Purge cached artifacts and recompute everything from scratch")
-        print("   [3] Stop / Abort    - Cancel execution and exit immediately")
-        print("!" * 115)
+            h_suffix = ""
+            if target_sample_hashes and s_id in target_sample_hashes:
+                h_suffix = f" [{target_sample_hashes[s_id][:8]}]"
+            print(f"│ • {s_id}{h_suffix}: [{stages_str}]")
+        print("├── Options ───────────────────────────────────────────────────┤")
+        print("│ [1] Reuse cache (Default)       [2] Overwrite cache          │")
+        print("└──────────────────────────────────────────────────────────────┘")
 
         while True:
             try:
-                user_choice = input("\nSelect option [1/2/3] (press Enter for 1): ").strip().lower()
+                user_choice = input("Select option [1/2] (Enter for 1): ").strip().lower()
             except EOFError:
                 user_choice = "1"
+            except KeyboardInterrupt:
+                print("\nExecution aborted by user.")
+                sys.exit(0)
 
             if user_choice in ("", "1", "reuse", "r", "u"):
                 logger.info("User selected: REUSE existing cache.")
+                self.force_recompute = False
                 return "reuse"
             elif user_choice in ("2", "overwrite", "o", "purge", "p"):
-                logger.info("User selected: OVERWRITE cache. Purging operational cache...")
-                StageTracker.purge_operational_cache(
-                    self.operational_files_dir,
-                    results_dir=self.results_dir,
-                    target_sample_ids=target_sample_ids,
+                logger.info(
+                    "User selected: OVERWRITE cache. Stages will be recomputed fresh "
+                    "without upfront cache deletion."
                 )
+                self.force_recompute = True
                 return "overwrite"
-            elif user_choice in ("3", "stop", "abort", "exit", "q"):
-                logger.info("User selected: STOP/ABORT. Exiting pipeline.")
-                sys.exit(0)
             else:
-                print("Invalid selection. Please enter 1 (Reuse), 2 (Overwrite), or 3 (Stop).")
+                print("Invalid choice. Please enter 1 (Reuse) or 2 (Overwrite). Press Ctrl+C to abort.")
 
     # --------------------------------------------------------------------------
     # Step Invocations
@@ -220,6 +228,7 @@ class EndToEndPipelineRunner:
             config=self.pipeline_config,
             operational_files_dir=self.operational_files_dir,
             cache_dir=self.cache_dir,
+            force_recompute=self.force_recompute,
         )
 
     def run_alignment(self, sample: SampleRecord) -> AlignmentResult:
@@ -232,6 +241,7 @@ class EndToEndPipelineRunner:
             cache_dir=self.cache_dir,
             logs_dir=self.logs_dir,
             threads=self.alignment_threads,
+            force_recompute=self.force_recompute,
         )
 
     def run_damage(self, sample_id: str, aln_res: AlignmentResult) -> Tuple[DamageResult, Path]:
@@ -245,6 +255,7 @@ class EndToEndPipelineRunner:
             cache_dir=self.cache_dir,
             logs_dir=self.logs_dir,
             threads=self.alignment_threads,
+            force_recompute=self.force_recompute,
         )
 
     def run_contamination_and_report(self, unrescaled_bams: List[Tuple[str, Path, bool]]) -> Tuple[Path, Path]:
@@ -256,6 +267,7 @@ class EndToEndPipelineRunner:
             operational_files_dir=self.operational_files_dir,
             cache_dir=self.cache_dir,
             resource_alloc=self.resource_alloc,
+            force_recompute=self.force_recompute,
         )
 
     def run_consensus(
@@ -273,6 +285,7 @@ class EndToEndPipelineRunner:
             config=self.pipeline_config,
             operational_files_dir=self.operational_files_dir,
             cache_dir=self.cache_dir,
+            force_recompute=self.force_recompute,
         )
 
     def run_haplogroup(
@@ -296,6 +309,7 @@ class EndToEndPipelineRunner:
             config=self.pipeline_config,
             operational_files_dir=self.operational_files_dir,
             cache_dir=self.cache_dir,
+            force_recompute=self.force_recompute,
         )
 
     # --------------------------------------------------------------------------
@@ -315,14 +329,43 @@ class EndToEndPipelineRunner:
         print(f"[*] Cache Policy         : {effective_cache_mode.upper()}")
         print("=" * 115)
 
-        # Pre-flight Cache Inspection
-        self.handle_cache_policy(cache_mode=effective_cache_mode)
-
         # Step 1: Reference Genome Validation
         self.validate_reference()
 
-        # Step 2: Discovery & Preprocessing
-        samples = self.run_discovery_and_preprocessing(input_dir)
+        # Step 2: Discovery, Input Cryptographic Hashing & Preprocessing
+        logger.info("=" * 80)
+        logger.info("▶ BLOCK 2: DISCOVERY, INTEGRITY & PREPROCESSING (DiscoveryStep)")
+        logger.info("=" * 80)
+
+        discovered_samples = SampleDiscoveryEngine.build_sample_records(
+            input_dir=input_dir,
+            config=self.pipeline_config,
+            integrity_mode=self.pipeline_config.integrity_mode,
+        )
+        if not discovered_samples:
+            raise RuntimeError(f"No valid {self.data_type} sequencing samples discovered in {input_dir}")
+
+        target_sample_ids = [s.sample_id for s in discovered_samples]
+        target_sample_hashes = {
+            s.sample_id: (s.inputs.sample_hash or compute_sample_input_hash(extract_input_paths(s.inputs)))
+            for s in discovered_samples
+        }
+
+        # Pre-flight Cache Inspection with target sample IDs and hashes
+        resolved_policy = self.handle_cache_policy(
+            cache_mode=effective_cache_mode,
+            target_sample_ids=target_sample_ids,
+            target_sample_hashes=target_sample_hashes,
+        )
+        self.force_recompute = (resolved_policy == "overwrite")
+
+        samples = DiscoveryStep.run_preprocessing_for_samples(
+            raw_samples=discovered_samples,
+            config=self.pipeline_config,
+            operational_files_dir=self.operational_files_dir,
+            cache_dir=self.cache_dir,
+            force_recompute=self.force_recompute,
+        )
         cohort_sample_ids = [s.sample_id for s in samples]
 
         # Step 3 & 4: Alignment & Damage Profiling

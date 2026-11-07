@@ -28,6 +28,7 @@ import pysam
 from src.utils import (
     calculate_sha256,
     compute_composite_hash,
+    compute_sample_input_hash,
     extract_input_paths,
     GradientProgressBar,
     PipelineConfig,
@@ -128,6 +129,7 @@ class SampleIdentity:
     data_type: DataType = DataType.FASTQ
     is_paired: bool = False
     raw_read_count: int = 0
+    sample_hash: Optional[str] = None
 
 
 @dataclass
@@ -142,6 +144,7 @@ class InputFiles:
     single_path: Optional[Path] = None
     total_raw_bytes: int = 0
     raw_reads_total: Optional[int] = None
+    sample_hash: Optional[str] = None
 
 
 @dataclass
@@ -466,6 +469,10 @@ class SampleDiscoveryEngine:
 
             print(f"{s_id:<18} | {data_type_str:<6} | {layout_str:<6} | {len(flist):<6} | {stat.value:<8} | {notes}")
 
+            # Derive deterministic SHA-256 hash of original input sample file(s)
+            raw_file_paths = [f.path for f in flist]
+            s_hash = compute_sample_input_hash(raw_file_paths)
+
             rec = SampleRecord(
                 sample_id=s_id,
                 identity=SampleIdentity(
@@ -473,6 +480,7 @@ class SampleDiscoveryEngine:
                     library_id=f"LIB_{s_id}",
                     data_type=DataType(data_type_str),
                     is_paired=is_paired,
+                    sample_hash=s_hash,
                 ),
                 inputs=InputFiles(
                     data_type=DataType(data_type_str),
@@ -481,6 +489,7 @@ class SampleDiscoveryEngine:
                     r1_path=r1_f,
                     r2_path=r2_f,
                     total_raw_bytes=sum(f.file_size_bytes for f in flist),
+                    sample_hash=s_hash,
                 ),
                 validation=ValidationResult(status=stat, errors=[valid_err] if valid_err else []),
             )
@@ -877,33 +886,17 @@ class DiscoveryStep:
     """High-level runner for Pipeline Step 2 (Discovery & Preprocessing)."""
 
     @classmethod
-    def run(
+    def run_preprocessing_for_samples(
         cls,
-        input_dir: Path,
+        raw_samples: List[SampleRecord],
         config: PipelineConfig,
         operational_files_dir: Path,
         cache_dir: Optional[Path] = None,
-        data_type: Optional[str] = None,
-        logs_dir: Optional[Path] = None,
-        threads: Optional[int] = None,
+        force_recompute: bool = False,
     ) -> List[SampleRecord]:
-        """Discovers raw samples, applies cache policy, and executes AdapterRemoval."""
-        if data_type:
-            config.data_type = data_type
+        """Executes AdapterRemoval preprocessing for a pre-discovered cohort of samples with hash caching."""
         if cache_dir is None:
             cache_dir = operational_files_dir / "cache"
-        logger.info("=" * 80)
-        logger.info("▶ BLOCK 2: DISCOVERY, INTEGRITY & PREPROCESSING (DiscoveryStep)")
-        logger.info("=" * 80)
-
-        raw_samples = SampleDiscoveryEngine.build_sample_records(
-            input_dir=input_dir,
-            config=config,
-            integrity_mode=config.integrity_mode,
-        )
-
-        if not raw_samples:
-            raise RuntimeError(f"No valid FASTQ samples discovered in {input_dir}")
 
         processed_samples: List[SampleRecord] = []
         prep_cfg = config.raw_data.get("preprocessing", {})
@@ -911,14 +904,22 @@ class DiscoveryStep:
         for sample in raw_samples:
             s_id = sample.sample_id
             legacy_dir = operational_files_dir / "alignment" / s_id
-            tracker = StageTracker.load_or_create(cache_dir, s_id, legacy_dir=legacy_dir)
+            raw_paths = extract_input_paths(sample.inputs)
+            s_hash = sample.inputs.sample_hash or compute_sample_input_hash(raw_paths)
+
+            tracker = StageTracker.load_or_create(
+                cache_dir,
+                s_id,
+                legacy_dir=legacy_dir,
+                sample_hash=s_hash,
+                force_recompute=force_recompute,
+            )
 
             expected_settings = legacy_dir / "trimmed" / f"{s_id}.settings"
             base_prefix = legacy_dir / "trimmed" / s_id
 
-            raw_paths = extract_input_paths(sample.inputs)
             raw_input_meta = [(str(p), p.stat().st_size, p.stat().st_mtime) for p in raw_paths]
-            prep_composite_hash = compute_composite_hash(prep_cfg, raw_input_meta)
+            prep_composite_hash = compute_composite_hash(prep_cfg, s_hash, raw_input_meta)
 
             is_paired = sample.inputs.is_paired
 
@@ -972,12 +973,51 @@ class DiscoveryStep:
                 time.perf_counter() - t0,
                 {"settings": expected_settings},
                 composite_hash=prep_composite_hash,
+                metadata={"sample_hash": s_hash},
             )
             cls.ensure_block2_contract(s_id, processed_sample, operational_files_dir, force_overwrite=True)
             processed_samples.append(processed_sample)
 
         logger.info(f"✅ Block 2 complete for {len(processed_samples)} sample(s).")
         return processed_samples
+
+    @classmethod
+    def run(
+        cls,
+        input_dir: Path,
+        config: PipelineConfig,
+        operational_files_dir: Path,
+        cache_dir: Optional[Path] = None,
+        data_type: Optional[str] = None,
+        logs_dir: Optional[Path] = None,
+        threads: Optional[int] = None,
+        force_recompute: bool = False,
+    ) -> List[SampleRecord]:
+        """Discovers raw samples, applies cache policy, and executes AdapterRemoval."""
+        if data_type:
+            config.data_type = data_type
+        if cache_dir is None:
+            cache_dir = operational_files_dir / "cache"
+        logger.info("=" * 80)
+        logger.info("▶ BLOCK 2: DISCOVERY, INTEGRITY & PREPROCESSING (DiscoveryStep)")
+        logger.info("=" * 80)
+
+        raw_samples = SampleDiscoveryEngine.build_sample_records(
+            input_dir=input_dir,
+            config=config,
+            integrity_mode=config.integrity_mode,
+        )
+
+        if not raw_samples:
+            raise RuntimeError(f"No valid FASTQ samples discovered in {input_dir}")
+
+        return cls.run_preprocessing_for_samples(
+            raw_samples=raw_samples,
+            config=config,
+            operational_files_dir=operational_files_dir,
+            cache_dir=cache_dir,
+            force_recompute=force_recompute,
+        )
 
     @classmethod
     def ensure_block2_contract(

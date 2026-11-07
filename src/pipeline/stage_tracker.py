@@ -36,6 +36,8 @@ class StageTracker:
     artifacts: Dict[str, str] = field(default_factory=dict)
     stage_hashes: Dict[str, str] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    sample_hash: Optional[str] = None
+    force_recompute: bool = False
 
     @classmethod
     def load_or_create(
@@ -43,51 +45,110 @@ class StageTracker:
         cache_dir: Path,
         sample_id: str,
         legacy_dir: Optional[Path] = None,
+        sample_hash: Optional[str] = None,
+        force_recompute: bool = False,
     ) -> "StageTracker":
         """
         Load an existing status tracker from the centralized cache directory,
-        migrating legacy per-sample alignment state files if present.
+        matching sample_id and sample_hash if provided. This ensures that different
+        samples sharing the same sample_id never incorrectly reuse stale cache.
         """
         cache_dir.mkdir(parents=True, exist_ok=True)
-        status_path = cache_dir / f"{sample_id}.stage_status.json"
+        target_file: Optional[Path] = None
+        data: Dict[str, Any] = {}
 
-        # Migrate from legacy operational_files/alignment/<sample_id>/ if needed
-        if not status_path.is_file() and legacy_dir:
+        # 1. If sample_hash is provided, check hash-specific status file first
+        if sample_hash:
+            short_h = sample_hash[:12]
+            hash_file = cache_dir / f"{sample_id}_{short_h}.stage_status.json"
+            if hash_file.is_file():
+                target_file = hash_file
+
+        # 2. Check canonical status file f"{sample_id}.stage_status.json"
+        canonical_file = cache_dir / f"{sample_id}.stage_status.json"
+        if target_file is None and canonical_file.is_file():
+            try:
+                with open(canonical_file, "r", encoding="utf-8") as f:
+                    cand_data = json.load(f)
+                cand_hash = cand_data.get("sample_hash") or cand_data.get("metadata", {}).get("sample_hash")
+                if sample_hash and cand_hash and cand_hash != sample_hash:
+                    logger.info(
+                        f"[{sample_id}] Cached status {canonical_file.name} hash ({cand_hash[:8]}...) "
+                        f"does not match current sample hash ({sample_hash[:8]}...). Starting fresh tracker."
+                    )
+                else:
+                    target_file = canonical_file
+                    data = cand_data
+            except Exception as exc:
+                logger.warning(f"[{sample_id}] Failed reading {canonical_file}: {exc}")
+
+        # 3. Check legacy dir migration if needed
+        if target_file is None and legacy_dir:
             legacy_file = legacy_dir / f"{sample_id}.stage_status.json"
             if legacy_file.is_file():
                 try:
-                    shutil.copy2(legacy_file, status_path)
-                    logger.info(f"[{sample_id}] Migrated status cache to centralized folder: {status_path}")
+                    with open(legacy_file, "r", encoding="utf-8") as f:
+                        cand_data = json.load(f)
+                    cand_hash = cand_data.get("sample_hash")
+                    if not (sample_hash and cand_hash and cand_hash != sample_hash):
+                        dest_file = cache_dir / (
+                            f"{sample_id}_{sample_hash[:12]}.stage_status.json"
+                            if sample_hash
+                            else canonical_file
+                        )
+                        shutil.copy2(legacy_file, dest_file)
+                        target_file = dest_file
+                        data = cand_data
                 except Exception as exc:
-                    logger.warning(f"[{sample_id}] Failed migrating legacy cache file: {exc}")
+                    logger.warning(f"[{sample_id}] Failed migrating legacy cache: {exc}")
 
-        if status_path.is_file():
+        # If target_file was selected but data not loaded yet
+        if target_file and not data:
             try:
-                with open(status_path, "r", encoding="utf-8") as f:
+                with open(target_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                return cls(
-                    sample_id=sample_id,
-                    status_file=status_path,
-                    stages=data.get("stages", {}),
-                    runtimes=data.get("runtimes", {}),
-                    artifacts=data.get("artifacts", {}),
-                    stage_hashes=data.get("stage_hashes", {}),
-                    metadata=data.get("metadata", {}),
-                )
             except Exception as exc:
-                logger.warning(f"[{sample_id}] Corrupted stage tracker on disk, re-initializing: {exc}")
+                logger.warning(f"[{sample_id}] Corrupted stage tracker {target_file}: {exc}")
+                target_file = None
 
-        return cls(sample_id=sample_id, status_file=status_path)
+        if target_file and data:
+            return cls(
+                sample_id=sample_id,
+                status_file=target_file,
+                stages=data.get("stages", {}),
+                runtimes=data.get("runtimes", {}),
+                artifacts=data.get("artifacts", {}),
+                stage_hashes=data.get("stage_hashes", {}),
+                metadata=data.get("metadata", {}),
+                sample_hash=data.get("sample_hash") or sample_hash,
+                force_recompute=force_recompute,
+            )
+
+        # Fresh tracker initialization
+        status_path = (
+            cache_dir / f"{sample_id}_{sample_hash[:12]}.stage_status.json"
+            if sample_hash
+            else canonical_file
+        )
+        return cls(
+            sample_id=sample_id,
+            status_file=status_path,
+            sample_hash=sample_hash,
+            force_recompute=force_recompute,
+        )
 
     @classmethod
     def inspect_operational_cache(
         cls,
         operational_files_dir: Path,
         target_sample_ids: Optional[List[str]] = None,
+        target_sample_hashes: Optional[Dict[str, str]] = None,
     ) -> Dict[str, List[str]]:
         """
         Scans operational_files/ to detect existing cached stages and sample artifacts.
-        Returns a dictionary mapping sample_id -> list of cached stages/directories.
+        If target_sample_hashes is provided, filters or validates that cached stages
+        actually correspond to the current sample's content hash.
+        Returns a dictionary mapping sample_id -> list of cached stages.
         """
         detected: Dict[str, Set[str]] = {}
         target_set = set(target_sample_ids) if target_sample_ids else None
@@ -96,12 +157,23 @@ class StageTracker:
         cache_dir = operational_files_dir / "cache"
         if cache_dir.is_dir():
             for status_file in sorted(cache_dir.glob("*.stage_status.json")):
-                s_id = status_file.name.removesuffix(".stage_status.json")
-                if target_set is not None and s_id not in target_set:
+                stem = status_file.name.removesuffix(".stage_status.json")
+                raw_s_id = stem.split("_")[0] if "_" in stem else stem
+                if target_set is not None and raw_s_id not in target_set and stem not in target_set:
                     continue
                 try:
                     with open(status_file, "r", encoding="utf-8") as f:
                         data = json.load(f)
+                    s_id = data.get("sample_id", raw_s_id)
+                    s_hash = data.get("sample_hash") or data.get("metadata", {}).get("sample_hash")
+
+                    # If target_sample_hashes provided, verify hash match
+                    if target_sample_hashes and s_id in target_sample_hashes:
+                        expected_hash = target_sample_hashes[s_id]
+                        if s_hash and expected_hash and s_hash != expected_hash:
+                            # Stale cache from a different sample with the same name - skip!
+                            continue
+
                     completed_stages = [
                         st_name for st_name, st_val in data.get("stages", {}).items() if st_val == "SUCCESS"
                     ]
@@ -110,7 +182,7 @@ class StageTracker:
                     else:
                         detected.setdefault(s_id, set()).add("CACHE_TRACKER")
                 except Exception:
-                    detected.setdefault(s_id, set()).add("CACHE_TRACKER")
+                    detected.setdefault(raw_s_id, set()).add("CACHE_TRACKER")
 
         # 2. Check physical module subdirectories in operational_files/
         for sub in STAGE_SUBDIRS:
@@ -146,8 +218,9 @@ class StageTracker:
         cache_dir = operational_files_dir / "cache"
         if cache_dir.is_dir():
             for status_file in list(cache_dir.glob("*.stage_status.json")):
-                s_id = status_file.name.removesuffix(".stage_status.json")
-                if target_set is None or s_id in target_set:
+                stem = status_file.name.removesuffix(".stage_status.json")
+                s_id = stem.split("_")[0] if "_" in stem else stem
+                if target_set is None or s_id in target_set or stem in target_set:
                     try:
                         status_file.unlink()
                         removed_count += 1
@@ -214,6 +287,12 @@ class StageTracker:
         current_composite_hash: str,
     ) -> bool:
         """Evaluate whether a pipeline stage can be bypassed safely via cached deliverables."""
+        if self.force_recompute:
+            logger.info(
+                f"[{self.sample_id}] Stage {stage_name} cache bypassed (force_recompute=True)."
+            )
+            return False
+
         if self.stages.get(stage_name) != "SUCCESS":
             return False
 
@@ -252,20 +331,25 @@ class StageTracker:
         if metadata:
             self.metadata[stage_name] = metadata
 
+        payload = {
+            "sample_id": self.sample_id,
+            "sample_hash": self.sample_hash,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "stages": self.stages,
+            "runtimes": self.runtimes,
+            "stage_hashes": self.stage_hashes,
+            "artifacts": self.artifacts,
+            "metadata": self.metadata,
+        }
+
         try:
             with open(self.status_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "sample_id": self.sample_id,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                        "stages": self.stages,
-                        "runtimes": self.runtimes,
-                        "stage_hashes": self.stage_hashes,
-                        "artifacts": self.artifacts,
-                        "metadata": self.metadata,
-                    },
-                    f,
-                    indent=2,
-                )
+                json.dump(payload, f, indent=2)
+
+            # Also maintain canonical <sample_id>.stage_status.json
+            canonical = self.status_file.parent / f"{self.sample_id}.stage_status.json"
+            if self.status_file.resolve() != canonical.resolve():
+                with open(canonical, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2)
         except Exception as exc:
             logger.warning(f"[{self.sample_id}] Failed saving status tracker: {exc}")

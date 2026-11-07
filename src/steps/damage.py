@@ -235,7 +235,6 @@ class DamageQuantifierEngine:
             "-i", str(bam_path),
             "-r", str(reference_fasta),
             "-d", str(output_dir),
-            "--no-rescale",
         ]
 
         run_tracked_subprocess(
@@ -258,9 +257,37 @@ class DamageQuantifierEngine:
             return td
 
         with open(table_path, "r", encoding="utf-8") as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 6:
+            header = None
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("#") or "End" in line or "Pos" in line:
+                    clean_header = line.lstrip("# \t").strip()
+                    header = [p.strip().upper() for p in clean_header.split()]
+                    continue
+
+                parts = line.split()
+                if header and len(parts) == len(header):
+                    row = dict(zip(header, parts))
+                    end = row.get("END", "").lower()
+                    try:
+                        pos = int(row.get("POS", -1))
+                        total = float(row.get("TOTAL", 0))
+                        ct = float(row.get("C>T", 0))
+                        ga = float(row.get("G>A", 0))
+                    except ValueError:
+                        continue
+
+                    if "5p" in end and pos == 1 and total > 0:
+                        td.c_to_t_5p_pos1 = round(ct / total, 4)
+                    elif "5p" in end and pos == 2 and total > 0:
+                        td.c_to_t_5p_pos2 = round(ct / total, 4)
+                    elif "3p" in end and pos == 1 and total > 0:
+                        td.g_to_a_3p_pos1 = round(ga / total, 4)
+                    elif "3p" in end and pos == 2 and total > 0:
+                        td.g_to_a_3p_pos2 = round(ga / total, 4)
+                elif len(parts) >= 6:
                     end, pos, ref, base, count, total = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
                     try:
                         p_int = int(pos)
@@ -417,17 +444,28 @@ class QualityRescaleEngine:
         reference_fasta: Path,
         output_dir: Path,
         log_file: Path,
+        model_dir: Optional[Path] = None,
     ) -> Path:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = model_dir if (model_dir and (model_dir / "misincorporation.txt").is_file()) else output_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
-        cmd = [
-            "mapDamage",
-            "-i", str(bam_path),
-            "-r", str(reference_fasta),
-            "-d", str(output_dir),
-            "--rescale",
-        ]
+        if target_dir == model_dir:
+            cmd = [
+                "mapDamage",
+                "-i", str(bam_path),
+                "-r", str(reference_fasta),
+                "-d", str(target_dir),
+                "--rescale-only",
+            ]
+        else:
+            cmd = [
+                "mapDamage",
+                "-i", str(bam_path),
+                "-r", str(reference_fasta),
+                "-d", str(target_dir),
+                "--rescale",
+            ]
 
         run_tracked_subprocess(
             cmd=cmd,
@@ -437,9 +475,9 @@ class QualityRescaleEngine:
             check=True,
         )
 
-        rescaled_bams = list(output_dir.glob("*.rescaled.bam"))
+        rescaled_bams = list(target_dir.glob("*.rescaled.bam"))
         if not rescaled_bams:
-            raise RuntimeError(f"mapDamage completed but no *.rescaled.bam found in {output_dir}")
+            raise RuntimeError(f"mapDamage completed but no *.rescaled.bam found in {target_dir}")
 
         rescaled_bam = rescaled_bams[0]
         cmd_idx = ["samtools", "index", str(rescaled_bam)]
@@ -535,7 +573,7 @@ class DamageOrchestrator:
             resc_log = sample_log / f"{sample_id}.rescale.log"
             try:
                 rescaled_bam = QualityRescaleEngine.run_rescaling(
-                    target_bam, reference_info.fasta_path, resc_dir, resc_log
+                    target_bam, reference_info.fasta_path, resc_dir, resc_log, model_dir=md_dir
                 )
             except Exception as e:
                 logger.warning(f"[{sample_id}] mapDamage rescaling failed: {e}")
@@ -597,10 +635,16 @@ class DamageStep:
         cache_dir: Path,
         logs_dir: Path,
         threads: int = 2,
+        force_recompute: bool = False,
     ) -> Tuple[DamageResult, Path]:
         """Runs damage assessment, checks cache validity, and emits Block 4 contract."""
         legacy_dir = operational_files_dir / "alignment" / sample_id
-        tracker = StageTracker.load_or_create(cache_dir, sample_id, legacy_dir=legacy_dir)
+        tracker = StageTracker.load_or_create(
+            cache_dir,
+            sample_id,
+            legacy_dir=legacy_dir,
+            force_recompute=force_recompute,
+        )
 
         damage_dir = operational_files_dir / "damage" / sample_id
         damage_json = damage_dir / f"{sample_id}.damage.json"

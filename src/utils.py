@@ -59,6 +59,26 @@ def compute_composite_hash(*elements: Any) -> str:
     return hasher.hexdigest()
 
 
+def compute_sample_input_hash(raw_paths: Union[Path, str, List[Union[Path, str]]]) -> str:
+    """
+    Computes a deterministic combined SHA-256 hash across all raw sequencing input files for a sample.
+    If multiple files (e.g. PE R1 and R2), computes SHA-256 of each file and derives a composite hash.
+    """
+    if isinstance(raw_paths, (str, Path)):
+        paths = [Path(raw_paths)]
+    else:
+        paths = [Path(p) for p in raw_paths]
+
+    valid_paths = sorted([p.resolve() for p in paths if p.is_file()], key=lambda p: str(p))
+    if not valid_paths:
+        return ""
+
+    file_hashes = [calculate_sha256(p) for p in valid_paths]
+    if len(file_hashes) == 1:
+        return file_hashes[0]
+    return compute_composite_hash(*file_hashes)
+
+
 def atomic_write_json(filepath: Union[str, Path], data: Any, indent: int = 2) -> None:
     """Safely writes JSON to a file via a temporary file + atomic rename to prevent partial writes."""
     target = Path(filepath).resolve()
@@ -1331,6 +1351,7 @@ __all__ = [
     # Cryptographic & File Helpers (used by 2+ scripts)
     "calculate_sha256",
     "compute_composite_hash",
+    "compute_sample_input_hash",
     "atomic_write_json",
     "resolve_path",
     "extract_input_paths",

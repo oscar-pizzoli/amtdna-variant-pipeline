@@ -568,10 +568,16 @@ class ConsensusStep:
         config: PipelineConfig,
         operational_files_dir: Path,
         cache_dir: Path,
+        force_recompute: bool = False,
     ) -> Tuple[ConsensusQC, Path, Path, Path]:
         """Runs consensus calling and emits Block 6 contract."""
         legacy_dir = operational_files_dir / "alignment" / sample_id
-        tracker = StageTracker.load_or_create(cache_dir, sample_id, legacy_dir=legacy_dir)
+        tracker = StageTracker.load_or_create(
+            cache_dir,
+            sample_id,
+            legacy_dir=legacy_dir,
+            force_recompute=force_recompute,
+        )
 
         block6_out = operational_files_dir / "consensus" / sample_id
         canonical_fa = block6_out / f"{sample_id}.consensus.fasta"

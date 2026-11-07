@@ -487,6 +487,7 @@ class ContaminationStep:
         operational_files_dir: Path,
         cache_dir: Path,
         resource_alloc: ResourceAllocation,
+        force_recompute: bool = False,
     ) -> Tuple[Path, Path]:
         """Runs Block 5 contamination estimation and exports summary TSV/JSON and contracts."""
         logger.info("=" * 80)
@@ -501,7 +502,12 @@ class ContaminationStep:
 
         for s_id, bam_path, is_ancient in unrescaled_bams:
             legacy_dir = operational_files_dir / "alignment" / s_id
-            tracker = StageTracker.load_or_create(cache_dir, s_id, legacy_dir=legacy_dir)
+            tracker = StageTracker.load_or_create(
+                cache_dir,
+                s_id,
+                legacy_dir=legacy_dir,
+                force_recompute=force_recompute,
+            )
             b5_contract_path = contam_dir / s_id / f"{s_id}.block5_contract.json"
             bam_sha256 = calculate_sha256(bam_path)
 
@@ -531,7 +537,12 @@ class ContaminationStep:
             )
             for r in results:
                 s_dir = operational_files_dir / "alignment" / r.sample_id
-                t = StageTracker.load_or_create(cache_dir, r.sample_id, legacy_dir=s_dir)
+                t = StageTracker.load_or_create(
+                    cache_dir,
+                    r.sample_id,
+                    legacy_dir=s_dir,
+                    force_recompute=force_recompute,
+                )
                 contract_path = contam_dir / r.sample_id / f"{r.sample_id}.block5_contract.json"
                 target_bam = next(b[1] for b in unrescaled_bams if b[0] == r.sample_id)
                 target_bam_sha = calculate_sha256(target_bam)

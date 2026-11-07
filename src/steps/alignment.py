@@ -32,6 +32,8 @@ from src.steps.discovery import SampleRecord
 from src.utils import (
     calculate_sha256,
     compute_composite_hash,
+    compute_sample_input_hash,
+    extract_input_paths,
     GradientProgressBar,
     PipelineConfig,
     run_tracked_subprocess,
@@ -811,11 +813,20 @@ class AlignmentStep:
         cache_dir: Path,
         logs_dir: Path,
         threads: int = 4,
+        force_recompute: bool = False,
     ) -> AlignmentResult:
         """Executes Block 3 alignment for a sample with stage validation and contract emission."""
         s_id = sample.sample_id
         legacy_dir = operational_files_dir / "alignment" / s_id
-        tracker = StageTracker.load_or_create(cache_dir, s_id, legacy_dir=legacy_dir)
+        raw_paths = extract_input_paths(sample.inputs)
+        s_hash = getattr(sample.inputs, "sample_hash", None) or compute_sample_input_hash(raw_paths)
+        tracker = StageTracker.load_or_create(
+            cache_dir,
+            s_id,
+            legacy_dir=legacy_dir,
+            sample_hash=s_hash,
+            force_recompute=force_recompute,
+        )
 
         filt_cfg = config.raw_data.get("filtering", {})
         dedup_cfg = config.raw_data.get("deduplication", {})
@@ -856,6 +867,7 @@ class AlignmentStep:
             dedup_cfg,
             filt_cfg,
             reference_info.file_sha256,
+            s_hash,
             trimmed_files,
         )
 
@@ -907,12 +919,12 @@ class AlignmentStep:
             raise RuntimeError(f"[{s_id}] Block 3 Alignment failed: {aln_res.errors}")
 
         target_bam = aln_res.outputs.filtered_bam or final_bam
-        meta = {}
+        meta = {"sample_hash": s_hash}
         if aln_res.metrics:
             m = aln_res.metrics
             cov = m.coverage
             dedup = m.dedup_metrics
-            meta = {
+            meta.update({
                 "mean_depth": cov.mean_depth_post_dedup,
                 "coverage_breadth_1x": round(cov.breadth_1x_pct / 100.0, 4),
                 "coverage_breadth_3x": round(cov.breadth_3x_pct / 100.0, 4),
@@ -920,7 +932,7 @@ class AlignmentStep:
                 "coverage_breadth_10x": round(cov.breadth_10x_pct / 100.0, 4),
                 "duplication_rate": dedup.duplication_rate_reads,
                 "mapped_reads_mt": m.retained_filtered_reads,
-            }
+            })
 
         tracker.mark_success(
             "ALIGN_AND_DEDUP",

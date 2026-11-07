@@ -289,3 +289,23 @@ def test_synthetic_bam_and_preflight() -> None:
             allow_fallback=False,
         )
         assert resolved_bam.resolve() == bam_path.resolve()
+
+
+def test_steps_damage_parse_misincorporation_table(tmp_path: Path) -> None:
+    """Verifies that DamageQuantifierEngine in src.steps.damage correctly parses standard mapDamage outputs."""
+    from src.steps.damage import DamageQuantifierEngine as StepDamageQuantifier
+
+    misinc_file = tmp_path / "misincorporation.txt"
+    misinc_file.write_text(
+        "# Chr\tEnd\tStd\tPos\tBase\tA\tC\tG\tT\tTotal\tG>A\tC>T\n"
+        "NC_012920.1\t5p\t+\t1\tC\t0\t80\t0\t20\t100\t0\t20\n"
+        "NC_012920.1\t5p\t+\t2\tC\t0\t92\t0\t8\t100\t0\t8\n"
+        "NC_012920.1\t3p\t+\t1\tG\t15\t0\t85\t0\t100\t15\t0\n"
+        "NC_012920.1\t3p\t+\t2\tG\t5\t0\t95\t0\t100\t5\t0\n"
+    )
+
+    td = StepDamageQuantifier.parse_misincorporation_table(misinc_file)
+    assert td.c_to_t_5p_pos1 == 0.20
+    assert td.c_to_t_5p_pos2 == 0.08
+    assert td.g_to_a_3p_pos1 == 0.15
+    assert td.g_to_a_3p_pos2 == 0.05
