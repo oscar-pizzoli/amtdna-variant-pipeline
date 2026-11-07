@@ -164,28 +164,22 @@ conda activate adna_qc
 python scripts/run_complete_pipeline.py
 ```
 
-To run on a custom `FASTQ` directory while specifying CPU allocation:
+To run on FASTQ inputs (omitting `-i` automatically selects `data/raw_fastq`):
 
 ```bash
-python scripts/run_complete_pipeline.py \
-    --data-type FASTQ \
-    --input-dir data/raw_fastq \
-    --cpu-budget-fraction 0.75 \
-    --log-level INFO
+python scripts/run_complete_pipeline.py -d FASTQ -b 0.75
 ```
 
-To run in direct `BAM` input mode (bypassing Block 2 adapter trimming):
+To run in direct BAM mode (omitting `-i` automatically selects `data/raw_bam`):
 
 ```bash
-python scripts/run_complete_pipeline.py \
-    --data-type BAM \
-    --input-dir data/raw_bam
+python scripts/run_complete_pipeline.py -d BAM
 ```
 
-To purge existing cache and force a clean recalculation from scratch:
+To specify a custom input directory and overwrite the existing cache:
 
 ```bash
-python scripts/run_complete_pipeline.py --cache-mode overwrite
+python scripts/run_complete_pipeline.py -d FASTQ -i /path/to/my_samples -m overwrite
 ```
 
 ---

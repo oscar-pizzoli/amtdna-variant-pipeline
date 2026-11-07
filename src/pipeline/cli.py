@@ -16,7 +16,7 @@ from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from src.pipeline.runner import EndToEndPipelineRunner
 
-from src.utils.logger import configure_root_logger
+from src.utils import configure_root_logger
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -25,29 +25,29 @@ def parse_arguments() -> argparse.Namespace:
         description="End-to-End Ancient and Modern mtDNA Consensus, Damage, and Haplogrouping Pipeline."
     )
     parser.add_argument(
-        "--config",
+        "-c", "--config",
         type=Path,
         default=PROJECT_ROOT / "config" / "default_config.yaml",
         help="Path to YAML configuration file.",
     )
     parser.add_argument(
-        "--data-type",
+        "-d", "--data-type",
         type=str,
         default=None,
-        choices=["BAM", "FASTQ"],
+        choices=["BAM", "FASTQ", "bam", "fastq"],
         help="Override input sequence format (BAM or FASTQ).",
     )
     parser.add_argument(
-        "--input-dir",
+        "-i", "--input-dir",
         type=Path,
         default=None,
-        help="Input sequence directory (FASTQ or BAM). Overrides config input_dir.",
+        help="Input sequence directory (FASTQ or BAM). Automatically defaults to data/raw_fastq (for FASTQ) or data/raw_bam (for BAM) if omitted.",
     )
     parser.add_argument(
-        "--cpu-budget-fraction",
+        "-b", "--cpu-budget-fraction",
         type=float,
         default=None,
-        help="Fraction of total host CPU cores allocated to pipeline execution.",
+        help="Fraction of total host CPU cores allocated to pipeline execution (e.g. 0.75).",
     )
     parser.add_argument(
         "--host-cores",
@@ -56,30 +56,36 @@ def parse_arguments() -> argparse.Namespace:
         help="Manual host core count override.",
     )
     parser.add_argument(
-        "--cache-mode",
+        "-m", "--cache-mode",
         type=str,
         default=None,
         choices=["prompt", "reuse", "overwrite"],
         help="Override YAML output.cache_mode ('prompt', 'reuse', or 'overwrite').",
     )
     parser.add_argument(
-        "--log-level",
+        "-l", "--log-level",
         type=str,
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging verbosity level (default: INFO).",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.data_type:
+        args.data_type = args.data_type.upper()
+    return args
 
 
-def resolve_input_directory(orchestrator: "EndToEndPipelineRunner", cli_input_dir: Path | None) -> Path:
-    """Resolve physical input directory based on input format and configuration."""
+def resolve_input_directory(orchestrator: "EndToEndPipelineRunner", cli_input_dir: Optional[Path]) -> Path:
+    """Resolve physical input directory based on input format and configuration.
+    
+    If cli_input_dir is explicitly specified (-i / --input-dir), resolves and uses that directory.
+    Otherwise, automatically selects the appropriate directory based on data_type:
+      - 'BAM': data/raw_bam (or configured raw_bam_dir)
+      - 'FASTQ': data/raw_fastq (or configured raw_fastq_dir)
+    """
     if cli_input_dir:
-        return cli_input_dir
-
-    yaml_input_dir = orchestrator.input_cfg.get("input_dir")
-    if yaml_input_dir:
-        return orchestrator._resolve_path(yaml_input_dir, PROJECT_ROOT / "data" / "raw_bam")
+        default_fallback = PROJECT_ROOT / "data" / ("raw_bam" if orchestrator.data_type == "BAM" else "raw_fastq")
+        return orchestrator._resolve_path(str(cli_input_dir), default_fallback)
 
     if orchestrator.data_type == "BAM":
         target_dir = orchestrator.input_cfg.get("raw_bam_dir", "data/raw_bam")

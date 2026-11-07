@@ -311,8 +311,8 @@ class EndToEndPipelineRunner:
         print(f"[*] Total CPU Allocation : {self.resource_alloc.total_allocated_threads}/{self.resource_alloc.total_host_cores} cores ({self.resource_alloc.cpu_budget_fraction:.0%})")
         print(f"[*] Upstream Threads/Job : {self.alignment_threads} threads")
         print(f"[*] Schmutzi Workers     : {self.resource_alloc.max_schmutzi_workers} slots ({self.resource_alloc.threads_per_schmutzi_instance} threads/slot)")
-        print(f"[*] Input Format (YAML)  : {self.data_type}")
-        print(f"[*] Cache Policy (YAML)  : {effective_cache_mode.upper()}")
+        print(f"[*] Input Format         : {self.data_type}")
+        print(f"[*] Cache Policy         : {effective_cache_mode.upper()}")
         print("=" * 115)
 
         # Pre-flight Cache Inspection

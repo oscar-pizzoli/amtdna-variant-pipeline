@@ -114,6 +114,24 @@ class ReadGroupInfo:
     platform: str = "ILLUMINA"
     platform_unit: Optional[str] = None
     sequencing_center: Optional[str] = None
+    description: Optional[str] = None
+
+    def to_bwa_rg_string(self) -> str:
+        """Formats the Read Group string for the BWA -r parameter using literal backslash-t."""
+        parts = [
+            r"@RG",
+            f"ID:{self.read_group_id}",
+            f"SM:{self.sample_id}",
+            f"LB:{self.library_id}",
+            f"PL:{self.platform}",
+        ]
+        if self.platform_unit:
+            parts.append(f"PU:{self.platform_unit}")
+        if self.sequencing_center:
+            parts.append(f"CN:{self.sequencing_center}")
+        if self.description:
+            parts.append(f"DS:{self.description}")
+        return r"\t".join(parts)
 
     def to_sam_header_entry(self) -> str:
         fields = [
@@ -126,6 +144,8 @@ class ReadGroupInfo:
             fields.append(f"PU:{self.platform_unit}")
         if self.sequencing_center:
             fields.append(f"CN:{self.sequencing_center}")
+        if self.description:
+            fields.append(f"DS:{self.description}")
         return "@RG\t" + "\t".join(fields)
 
 
@@ -255,7 +275,7 @@ class BWAAligner:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         sai_file = output_bam.with_suffix(".sai")
 
-        rg_line = read_group.to_sam_header_entry()
+        rg_line = read_group.to_bwa_rg_string()
 
         cmd_aln = [
             "bwa", "aln",
@@ -267,11 +287,13 @@ class BWAAligner:
             str(fastq_path),
         ]
 
-        with open(sai_file, "wb") as f_sai, open(log_file, "w", encoding="utf-8") as f_log:
+        aln_log = log_file.with_suffix(".aln.log")
+        with open(sai_file, "wb") as f_sai, open(aln_log, "w", encoding="utf-8") as f_log:
             p_aln = subprocess.Popen(cmd_aln, stdout=f_sai, stderr=f_log)
             p_aln.wait()
             if p_aln.returncode != 0:
-                raise RuntimeError(f"bwa aln failed with exit code {p_aln.returncode}")
+                err_msg = aln_log.read_text(encoding="utf-8", errors="replace")[-1000:] if aln_log.is_file() else ""
+                raise RuntimeError(f"bwa aln failed with exit code {p_aln.returncode}: {err_msg}")
 
         cmd_samse = [
             "bwa", "samse",
@@ -280,16 +302,31 @@ class BWAAligner:
             str(sai_file),
             str(fastq_path),
         ]
-        cmd_view = ["samtools", "view", "-b", "-S", "-"]
+        cmd_view = [
+            "samtools", "view",
+            "-@", str(max(1, threads - 1)),
+            "-b",
+            "-o", str(output_bam),
+            "-",
+        ]
 
-        with open(log_file, "a", encoding="utf-8") as f_log, open(output_bam, "wb") as f_bam:
-            p_samse = subprocess.Popen(cmd_samse, stdout=subprocess.PIPE, stderr=f_log)
-            p_view = subprocess.Popen(cmd_view, stdin=p_samse.stdout, stdout=f_bam, stderr=f_log)
-            p_samse.stdout.close()
+        samse_log = log_file.with_suffix(".samse.log")
+        view_log = log_file.with_suffix(".view.log")
+
+        with open(samse_log, "w", encoding="utf-8") as f_samse_err, open(view_log, "w", encoding="utf-8") as f_view_err:
+            p_samse = subprocess.Popen(cmd_samse, stdout=subprocess.PIPE, stderr=f_samse_err)
+            p_view = subprocess.Popen(cmd_view, stdin=p_samse.stdout, stdout=subprocess.DEVNULL, stderr=f_view_err)
+            if p_samse.stdout:
+                p_samse.stdout.close()
             p_view.wait()
             p_samse.wait()
-            if p_view.returncode != 0 or p_samse.returncode != 0:
-                raise RuntimeError("bwa samse / samtools view pipeline failed")
+
+            if p_samse.returncode != 0:
+                err_text = samse_log.read_text(encoding="utf-8", errors="replace")[-1000:] if samse_log.is_file() else ""
+                raise RuntimeError(f"bwa samse failed with exit code {p_samse.returncode}: {err_text}")
+            if p_view.returncode != 0:
+                err_text = view_log.read_text(encoding="utf-8", errors="replace")[-1000:] if view_log.is_file() else ""
+                raise RuntimeError(f"samtools view failed with exit code {p_view.returncode}: {err_text}")
 
         if sai_file.is_file():
             sai_file.unlink()
@@ -313,7 +350,7 @@ class BWAAligner:
 
         sai_r1 = output_bam.with_suffix(".r1.sai")
         sai_r2 = output_bam.with_suffix(".r2.sai")
-        rg_line = read_group.to_sam_header_entry()
+        rg_line = read_group.to_bwa_rg_string()
 
         half_threads = max(1, threads // 2)
 
@@ -328,13 +365,22 @@ class BWAAligner:
             str(reference_fasta), str(r2_fastq),
         ]
 
-        with open(sai_r1, "wb") as f_s1, open(sai_r2, "wb") as f_s2, open(log_file, "w", encoding="utf-8") as f_log:
-            p1 = subprocess.Popen(cmd_aln1, stdout=f_s1, stderr=f_log)
-            p2 = subprocess.Popen(cmd_aln2, stdout=f_s2, stderr=f_log)
+        aln1_log = log_file.with_suffix(".aln1.log")
+        aln2_log = log_file.with_suffix(".aln2.log")
+
+        with open(sai_r1, "wb") as f_s1, open(aln1_log, "w", encoding="utf-8") as f_l1:
+            p1 = subprocess.Popen(cmd_aln1, stdout=f_s1, stderr=f_l1)
             p1.wait()
+        with open(sai_r2, "wb") as f_s2, open(aln2_log, "w", encoding="utf-8") as f_l2:
+            p2 = subprocess.Popen(cmd_aln2, stdout=f_s2, stderr=f_l2)
             p2.wait()
-            if p1.returncode != 0 or p2.returncode != 0:
-                raise RuntimeError("bwa aln failed on paired-end reads")
+
+        if p1.returncode != 0:
+            err_text = aln1_log.read_text(encoding="utf-8", errors="replace")[-1000:] if aln1_log.is_file() else ""
+            raise RuntimeError(f"bwa aln R1 failed with exit code {p1.returncode}: {err_text}")
+        if p2.returncode != 0:
+            err_text = aln2_log.read_text(encoding="utf-8", errors="replace")[-1000:] if aln2_log.is_file() else ""
+            raise RuntimeError(f"bwa aln R2 failed with exit code {p2.returncode}: {err_text}")
 
         cmd_sampe = [
             "bwa", "sampe",
@@ -343,16 +389,31 @@ class BWAAligner:
             str(sai_r1), str(sai_r2),
             str(r1_fastq), str(r2_fastq),
         ]
-        cmd_view = ["samtools", "view", "-b", "-S", "-"]
+        cmd_view = [
+            "samtools", "view",
+            "-@", str(max(1, threads - 1)),
+            "-b",
+            "-o", str(output_bam),
+            "-",
+        ]
 
-        with open(log_file, "a", encoding="utf-8") as f_log, open(output_bam, "wb") as f_bam:
-            p_sampe = subprocess.Popen(cmd_sampe, stdout=subprocess.PIPE, stderr=f_log)
-            p_view = subprocess.Popen(cmd_view, stdin=p_sampe.stdout, stdout=f_bam, stderr=f_log)
-            p_sampe.stdout.close()
+        sampe_log = log_file.with_suffix(".sampe.log")
+        view_log = log_file.with_suffix(".view.log")
+
+        with open(sampe_log, "w", encoding="utf-8") as f_sampe_err, open(view_log, "w", encoding="utf-8") as f_view_err:
+            p_sampe = subprocess.Popen(cmd_sampe, stdout=subprocess.PIPE, stderr=f_sampe_err)
+            p_view = subprocess.Popen(cmd_view, stdin=p_sampe.stdout, stdout=subprocess.DEVNULL, stderr=f_view_err)
+            if p_sampe.stdout:
+                p_sampe.stdout.close()
             p_view.wait()
             p_sampe.wait()
-            if p_view.returncode != 0 or p_sampe.returncode != 0:
-                raise RuntimeError("bwa sampe pipeline failed")
+
+            if p_sampe.returncode != 0:
+                err_text = sampe_log.read_text(encoding="utf-8", errors="replace")[-1000:] if sampe_log.is_file() else ""
+                raise RuntimeError(f"bwa sampe failed with exit code {p_sampe.returncode}: {err_text}")
+            if p_view.returncode != 0:
+                err_text = view_log.read_text(encoding="utf-8", errors="replace")[-1000:] if view_log.is_file() else ""
+                raise RuntimeError(f"samtools view failed with exit code {p_view.returncode}: {err_text}")
 
         for s in (sai_r1, sai_r2):
             if s.is_file():
@@ -380,21 +441,25 @@ class SamtoolsPipeline:
         if not input_bams:
             raise RuntimeError("Cannot merge empty BAM list")
 
-        if len(input_bams) == 1:
-            cmd_sort = ["samtools", "sort", "-@", str(threads), "-o", str(output_bam), str(input_bams[0])]
-            with open(log_file, "w", encoding="utf-8") as f_log:
-                subprocess.run(cmd_sort, stdout=f_log, stderr=subprocess.STDOUT, check=True)
-        else:
-            merged_tmp = output_bam.with_suffix(".tmp.merged.bam")
-            cmd_merge = ["samtools", "merge", "-f", "-@", str(threads), str(merged_tmp)] + [str(b) for b in input_bams]
-            cmd_sort = ["samtools", "sort", "-@", str(threads), "-o", str(output_bam), str(merged_tmp)]
+        try:
+            if len(input_bams) == 1:
+                cmd_sort = ["samtools", "sort", "-@", str(threads), "-o", str(output_bam), str(input_bams[0])]
+                with open(log_file, "w", encoding="utf-8") as f_log:
+                    subprocess.run(cmd_sort, stdout=f_log, stderr=subprocess.STDOUT, check=True)
+            else:
+                merged_tmp = output_bam.with_suffix(".tmp.merged.bam")
+                cmd_merge = ["samtools", "merge", "-f", "-@", str(threads), str(merged_tmp)] + [str(b) for b in input_bams]
+                cmd_sort = ["samtools", "sort", "-@", str(threads), "-o", str(output_bam), str(merged_tmp)]
 
-            with open(log_file, "w", encoding="utf-8") as f_log:
-                subprocess.run(cmd_merge, stdout=f_log, stderr=subprocess.STDOUT, check=True)
-                subprocess.run(cmd_sort, stdout=f_log, stderr=subprocess.STDOUT, check=True)
+                with open(log_file, "w", encoding="utf-8") as f_log:
+                    subprocess.run(cmd_merge, stdout=f_log, stderr=subprocess.STDOUT, check=True)
+                    subprocess.run(cmd_sort, stdout=f_log, stderr=subprocess.STDOUT, check=True)
 
-            if merged_tmp.is_file():
-                merged_tmp.unlink()
+                if merged_tmp.is_file():
+                    merged_tmp.unlink()
+        except subprocess.CalledProcessError as exc:
+            err_text = log_file.read_text(encoding="utf-8", errors="replace")[-1000:] if log_file.is_file() else ""
+            raise RuntimeError(f"samtools merge/sort failed (exit code {exc.returncode}): {err_text}") from exc
 
         cls.index_bam(output_bam)
 
@@ -402,7 +467,9 @@ class SamtoolsPipeline:
     def index_bam(cls, bam_path: Path) -> Path:
         """Generates samtools .bai index for target BAM."""
         cmd = ["samtools", "index", str(bam_path)]
-        subprocess.run(cmd, check=True, capture_output=True)
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"samtools index failed on {bam_path.name}: {res.stderr.strip()}")
         return bam_path.with_suffix(bam_path.suffix + ".bai")
 
 
